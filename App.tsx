@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
   Filter, 
@@ -168,6 +169,15 @@ export default function App() {
   const [editingProject, setEditingProject] = useState<Project | 'new' | null>(null);
 
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<{id: string, text: string, type: 'success' | 'error'}[]>([]);
+
+  const addNotification = (text: string, type: 'success' | 'error' = 'success') => {
+    const id = crypto.randomUUID();
+    setNotifications(prev => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 3000);
+  };
 
   // --- Supabase Data Fetching & Real-time ---
   useEffect(() => {
@@ -408,9 +418,15 @@ export default function App() {
           dependencies: newAction.dependencies,
           comments: newAction.comments
         }]);
-      if (error) console.error('Supabase action insert error:', error);
-    } catch (e) {
+      if (error) {
+        console.error('Supabase action insert error:', error);
+        addNotification(`Erreur de sauvegarde: ${error.message}`, 'error');
+      } else {
+        addNotification('Action créée avec succès');
+      }
+    } catch (e: any) {
       console.error('Supabase connection error:', e);
+      addNotification(`Erreur de connexion: ${e.message}`, 'error');
     }
   };
 
@@ -436,9 +452,15 @@ export default function App() {
           dependencies: updatedAction.dependencies,
           comments: updatedAction.comments
         }]);
-      if (error) console.error('Supabase action upsert error:', error);
-    } catch (e) {
+      if (error) {
+        console.error('Supabase action upsert error:', error);
+        addNotification(`Erreur de mise à jour: ${error.message}`, 'error');
+      } else {
+        addNotification('Action mise à jour');
+      }
+    } catch (e: any) {
       console.error('Supabase connection error:', e);
+      addNotification(`Erreur de connexion: ${e.message}`, 'error');
     }
   };
 
@@ -484,41 +506,47 @@ export default function App() {
   };
 
   const handleSaveProject = async (projectData: Partial<Project>) => {
-    let updatedProjects: Project[];
+    let projectToSync: Project;
+    
     if (editingProject && editingProject !== 'new') {
-      updatedProjects = projects.map(p => p.id === editingProject.id ? { ...p, ...projectData } as Project : p);
+      projectToSync = { ...editingProject, ...projectData } as Project;
+      setProjects(prev => prev.map(p => p.id === projectToSync.id ? projectToSync : p));
     } else {
-      const newProject: Project = {
+      projectToSync = {
         id: crypto.randomUUID(),
-        name: projectData.name || 'New Project',
+        name: projectData.name || 'Nouveau Projet',
         color: projectData.color || PROJECT_COLORS[projects.length % PROJECT_COLORS.length],
         status: projectData.status || 'Non commencé',
         startDate: projectData.startDate,
         endDate: projectData.endDate,
       };
-      updatedProjects = [...projects, newProject];
+      setProjects(prev => [...prev, projectToSync]);
     }
-    setProjects(updatedProjects);
+    
     setEditingProject(null);
 
     // Supabase Sync
     try {
-      const projectToSave = updatedProjects.find(p => p.id === (editingProject === 'new' ? updatedProjects[updatedProjects.length - 1].id : (editingProject as Project).id));
-      if (projectToSave) {
-        const { error } = await supabase
-          .from('projects')
-          .upsert([{
-            id: projectToSave.id,
-            name: projectToSave.name,
-            color: projectToSave.color,
-            status: projectToSave.status,
-            start_date: projectToSave.startDate,
-            end_date: projectToSave.endDate
-          }]);
-        if (error) console.error('Supabase sync error:', error);
+      const { error } = await supabase
+        .from('projects')
+        .upsert([{
+          id: projectToSync.id,
+          name: projectToSync.name,
+          color: projectToSync.color,
+          status: projectToSync.status,
+          start_date: projectToSync.startDate,
+          end_date: projectToSync.endDate
+        }]);
+      
+      if (error) {
+        console.error('Supabase sync error:', error);
+        addNotification(`Erreur projet: ${error.message}`, 'error');
+      } else {
+        addNotification('Projet sauvegardé');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('Supabase connection error:', e);
+      addNotification(`Erreur de connexion: ${e.message}`, 'error');
     }
   };
 
@@ -617,6 +645,25 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#F8FAFC] text-slate-900 font-sans overflow-hidden">
+      {/* Notifications */}
+      <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+        {notifications.map(n => (
+          <motion.div
+            key={n.id}
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className={cn(
+              "px-4 py-3 rounded-xl shadow-lg border text-sm font-medium flex items-center gap-2 min-w-[200px]",
+              n.type === 'success' ? "bg-white border-emerald-100 text-emerald-700" : "bg-white border-rose-100 text-rose-700"
+            )}
+          >
+            {n.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+            {n.text}
+          </motion.div>
+        ))}
+      </div>
+
       {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
         <div className="p-6 border-b border-slate-100">
