@@ -28,7 +28,8 @@ import {
   ArrowDown,
   Search,
   AlertTriangle,
-  Download
+  Download,
+  Archive
 } from 'lucide-react';
 import { 
   format, 
@@ -163,7 +164,7 @@ export default function App() {
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([]);
   const [selectedStatuses, setSelectedStatuses] = useState<Status[]>([]);
-  const [view, setView] = useState<'list' | 'gantt' | 'history' | 'time'>('list');
+  const [view, setView] = useState<'list' | 'gantt' | 'history' | 'time' | 'archives'>('list');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editingProject, setEditingProject] = useState<Project | 'new' | null>(null);
@@ -378,12 +379,23 @@ export default function App() {
 
   const filteredActions = useMemo(() => {
     return calculatedActions.filter(action => {
+      const project = projects.find(p => p.id === action.projectId);
+      const isArchived = project?.status === 'Terminé';
+      
+      // If we are in archives view, only show archived projects
+      if (view === 'archives') {
+        if (!isArchived) return false;
+      } else {
+        // In other views, only show active projects
+        if (isArchived) return false;
+      }
+
       const matchesProject = selectedProjectIds.length === 0 || selectedProjectIds.includes(action.projectId);
       const matchesPriority = selectedPriorities.length === 0 || selectedPriorities.includes(action.priority);
       const matchesStatus = selectedStatuses.length === 0 || selectedStatuses.includes(action.status);
       return matchesProject && matchesPriority && matchesStatus;
     });
-  }, [calculatedActions, selectedProjectIds, selectedPriorities, selectedStatuses]);
+  }, [calculatedActions, selectedProjectIds, selectedPriorities, selectedStatuses, view, projects]);
 
   const togglePriorityFilter = (priority: Priority) => {
     setSelectedPriorities(prev => 
@@ -701,7 +713,7 @@ export default function App() {
               </div>
             </div>
             <div className="space-y-1">
-              {projects.map(project => (
+              {projects.filter(p => p.status !== 'Terminé').map(project => (
                 <div key={project.id} className="group relative">
                   <label 
                     className={cn(
@@ -847,6 +859,16 @@ export default function App() {
                 <Clock className="w-4 h-4" />
                 Temps Passé
               </button>
+              <button 
+                onClick={() => setView('archives')}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  view === 'archives' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                <Archive className="w-4 h-4" />
+                Archives
+              </button>
             </div>
           </div>
 
@@ -892,6 +914,17 @@ export default function App() {
               timeLogs={timeLogs}
               onAddTimeLog={handleAddTimeLog}
               onDeleteTimeLog={handleDeleteTimeLog}
+            />
+          ) : view === 'archives' ? (
+            <ArchivesView 
+              projects={projects.filter(p => p.status === 'Terminé')}
+              actions={actions}
+              timeLogs={timeLogs}
+              onEditProject={(p) => setEditingProject(p)}
+              onEditAction={(a) => {
+                setEditingAction(a);
+                setIsModalOpen(true);
+              }}
             />
           ) : (
             <ActivityFeed 
@@ -939,6 +972,274 @@ interface CalculatedAction extends Action {
   slack: number;
   isCritical: boolean;
   hasOverlap: boolean;
+}
+
+function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction }: {
+  projects: Project[],
+  actions: Action[],
+  timeLogs: TimeLog[],
+  onEditProject: (p: Project) => void,
+  onEditAction: (a: Action) => void
+}) {
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [timeGrouping, setTimeGrouping] = useState<'week' | 'month'>('week');
+
+  const selectedProject = projects.find(p => p.id === selectedProjectId);
+  const projectActions = actions.filter(a => a.projectId === selectedProjectId);
+  const projectLogs = timeLogs.filter(l => l.projectId === selectedProjectId);
+
+  const totalHours = projectLogs.reduce((sum, log) => sum + log.hours, 0);
+
+  const groupedTime = useMemo(() => {
+    const groups: Record<string, number> = {};
+    projectLogs.forEach(log => {
+      const date = new Date(log.date);
+      const key = timeGrouping === 'week' 
+        ? `Semaine du ${format(startOfWeek(date, { weekStartsOn: 1 }), 'dd/MM/yyyy')}`
+        : format(date, 'MMMM yyyy');
+      groups[key] = (groups[key] || 0) + log.hours;
+    });
+    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [projectLogs, timeGrouping]);
+
+  return (
+    <div className="h-full flex overflow-hidden bg-slate-50/50">
+      {/* Project List */}
+      <div className="w-80 border-r border-slate-200 bg-white flex flex-col shrink-0">
+        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+            <Archive className="w-5 h-5 text-slate-400" />
+            Projets Archivés
+          </h2>
+          <span className="bg-slate-100 text-slate-500 text-[10px] font-bold px-2 py-0.5 rounded-full">
+            {projects.length}
+          </span>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {projects.length === 0 ? (
+            <div className="text-center py-12 px-4">
+              <Archive className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+              <p className="text-sm text-slate-400 italic">Aucun projet archivé pour le moment.</p>
+            </div>
+          ) : (
+            projects.map(project => {
+              const pTotalHours = timeLogs
+                .filter(l => l.projectId === project.id)
+                .reduce((sum, log) => sum + log.hours, 0);
+              
+              return (
+                <button
+                  key={project.id}
+                  onClick={() => setSelectedProjectId(project.id)}
+                  className={cn(
+                    "w-full text-left p-4 rounded-xl border transition-all group relative",
+                    selectedProjectId === project.id 
+                      ? "bg-white border-blue-200 shadow-md ring-1 ring-blue-100" 
+                      : "bg-white border-slate-100 hover:border-slate-200 hover:shadow-sm"
+                  )}
+                >
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: project.color }} />
+                    <span className="font-bold text-slate-900 truncate flex-1">{project.name}</span>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-4 text-[10px] text-slate-400 font-medium">
+                      <div className="flex items-center gap-1">
+                        <CheckSquare className="w-3 h-3" />
+                        {actions.filter(a => a.projectId === project.id).length} actions
+                      </div>
+                      <div className="flex items-center gap-1 text-blue-600 font-bold">
+                        <Clock className="w-3 h-3" />
+                        {pTotalHours}h
+                      </div>
+                    </div>
+                    {project.endDate && (
+                      <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                        <Calendar className="w-3 h-3" />
+                        Fini le {format(new Date(project.endDate), 'dd MMM yyyy')}
+                      </div>
+                    )}
+                  </div>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditProject(project);
+                    }}
+                    className="absolute top-2 right-2 p-1.5 opacity-0 group-hover:opacity-100 hover:bg-slate-100 rounded-lg transition-all"
+                  >
+                    <MoreVertical className="w-4 h-4 text-slate-400" />
+                  </button>
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Project Details */}
+      <div className="flex-1 overflow-y-auto p-8">
+        {selectedProject ? (
+          <div className="max-w-4xl mx-auto space-y-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="w-4 h-4 rounded-full" style={{ backgroundColor: selectedProject.color }} />
+                  <h2 className="text-3xl font-black text-slate-900 tracking-tight">{selectedProject.name}</h2>
+                </div>
+                <p className="text-slate-500 text-sm">Historique complet des actions et du temps passé.</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-xl">
+                  <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Total Temps</div>
+                  <div className="text-xl font-black text-blue-600">{totalHours}h</div>
+                </div>
+                <button 
+                  onClick={() => onEditProject(selectedProject)}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all shadow-sm h-fit"
+                >
+                  Gérer le projet
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 space-y-8">
+                <div className="space-y-4">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Actions ({projectActions.length})</h3>
+                  <div className="grid gap-3">
+                    {projectActions.length === 0 ? (
+                      <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center">
+                        <p className="text-slate-400 italic text-sm">Aucune action enregistrée pour ce projet.</p>
+                      </div>
+                    ) : (
+                      projectActions.map(action => (
+                        <div 
+                          key={action.id}
+                          className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group flex items-center justify-between"
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className={cn(
+                              "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+                              action.status === 'Done' ? "bg-emerald-50 text-emerald-600" : "bg-slate-50 text-slate-400"
+                            )}>
+                              <CheckCircle2 className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-slate-900 mb-1">{action.name}</h4>
+                              <div className="flex items-center gap-3 text-[10px] font-medium text-slate-400">
+                                <span className={cn(
+                                  "px-2 py-0.5 rounded-full border",
+                                  STATUS_COLORS[action.status]
+                                )}>
+                                  {action.status}
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  <Calendar className="w-3 h-3" />
+                                  {action.startDate ? format(new Date(action.startDate), 'dd/MM/yy') : 'Sans date'}
+                                </div>
+                                {action.comments.length > 0 && (
+                                  <div className="flex items-center gap-1">
+                                    <MessageSquare className="w-3 h-3" />
+                                    {action.comments.length}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => onEditAction(action)}
+                            className="p-2 opacity-0 group-hover:opacity-100 hover:bg-slate-50 rounded-xl transition-all"
+                          >
+                            <MoreVertical className="w-5 h-5 text-slate-400" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Temps Passé</h3>
+                    <div className="flex bg-slate-100 p-0.5 rounded-lg">
+                      <button 
+                        onClick={() => setTimeGrouping('week')}
+                        className={cn(
+                          "px-2 py-1 text-[10px] font-bold rounded-md transition-all",
+                          timeGrouping === 'week' ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                        )}
+                      >
+                        Sem.
+                      </button>
+                      <button 
+                        onClick={() => setTimeGrouping('month')}
+                        className={cn(
+                          "px-2 py-1 text-[10px] font-bold rounded-md transition-all",
+                          timeGrouping === 'month' ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                        )}
+                      >
+                        Mois
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {groupedTime.length === 0 ? (
+                      <p className="text-center text-xs text-slate-400 italic py-4">Aucun temps enregistré.</p>
+                    ) : (
+                      groupedTime.map(([label, hours]) => (
+                        <div key={label} className="flex items-center justify-between group">
+                          <div className="flex flex-col">
+                            <span className="text-xs font-bold text-slate-700">{label}</span>
+                            <div className="w-32 h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${Math.min((hours / totalHours) * 100, 100)}%` }}
+                                className="h-full bg-blue-500"
+                              />
+                            </div>
+                          </div>
+                          <span className="text-sm font-black text-slate-900">{hours}h</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-xl shadow-slate-200">
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Récapitulatif</h4>
+                  <div className="space-y-3">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-400">Actions finies</span>
+                      <span className="font-bold">{projectActions.filter(a => a.status === 'Done').length}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-400">Moyenne / Action</span>
+                      <span className="font-bold">
+                        {projectActions.length > 0 ? (totalHours / projectActions.length).toFixed(1) : 0}h
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto">
+            <div className="w-20 h-20 bg-white rounded-3xl shadow-xl flex items-center justify-center mb-6 border border-slate-100">
+              <Archive className="w-10 h-10 text-slate-200" />
+            </div>
+            <h3 className="text-xl font-bold text-slate-900 mb-2">Sélectionnez un projet</h3>
+            <p className="text-slate-500 text-sm leading-relaxed">
+              Choisissez un projet archivé dans la liste de gauche pour consulter son historique complet et ses analyses de temps.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function ListView({ actions, projects, onEdit, onDelete, onAddComment }: { 
