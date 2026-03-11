@@ -412,8 +412,8 @@ export default function App() {
           name: newAction.name,
           status: newAction.status,
           priority: newAction.priority,
-          start_date: newAction.startDate,
-          end_date: newAction.endDate,
+          start_date: newAction.startDate || null,
+          end_date: newAction.endDate || null,
           duration: newAction.duration,
           dependencies: newAction.dependencies,
           comments: newAction.comments
@@ -446,8 +446,8 @@ export default function App() {
           name: updatedAction.name,
           status: updatedAction.status,
           priority: updatedAction.priority,
-          start_date: updatedAction.startDate,
-          end_date: updatedAction.endDate,
+          start_date: updatedAction.startDate || null,
+          end_date: updatedAction.endDate || null,
           duration: updatedAction.duration,
           dependencies: updatedAction.dependencies,
           comments: updatedAction.comments
@@ -534,8 +534,8 @@ export default function App() {
           name: projectToSync.name,
           color: projectToSync.color,
           status: projectToSync.status,
-          start_date: projectToSync.startDate,
-          end_date: projectToSync.endDate
+          start_date: projectToSync.startDate || null,
+          end_date: projectToSync.endDate || null
         }]);
       
       if (error) {
