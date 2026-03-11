@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
   Filter, 
@@ -167,10 +168,22 @@ export default function App() {
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editingProject, setEditingProject] = useState<Project | 'new' | null>(null);
 
+  const [supabaseError, setSupabaseError] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<{id: string, text: string, type: 'success' | 'error'}[]>([]);
+
+  const addNotification = (text: string, type: 'success' | 'error' = 'success') => {
+    const id = crypto.randomUUID();
+    setNotifications(prev => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 3000);
+  };
+
   // --- Supabase Data Fetching & Real-time ---
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
+      setSupabaseError(null);
       try {
         // Fetch Projects
         const { data: projectsData, error: projectsError } = await supabase
@@ -223,9 +236,12 @@ export default function App() {
           createdAt: l.created_at
         }));
         setTimeLogs(formattedLogs);
+        
+        console.log('Données chargées avec succès depuis Supabase');
 
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error fetching data from Supabase:', error);
+        setSupabaseError(error.message || 'Erreur de connexion à Supabase');
       } finally {
         setIsLoading(false);
       }
@@ -396,15 +412,21 @@ export default function App() {
           name: newAction.name,
           status: newAction.status,
           priority: newAction.priority,
-          start_date: newAction.startDate,
-          end_date: newAction.endDate,
+          start_date: newAction.startDate || null,
+          end_date: newAction.endDate || null,
           duration: newAction.duration,
           dependencies: newAction.dependencies,
           comments: newAction.comments
         }]);
-      if (error) console.error('Supabase action insert error:', error);
-    } catch (e) {
+      if (error) {
+        console.error('Supabase action insert error:', error);
+        addNotification(`Erreur de sauvegarde: ${error.message}`, 'error');
+      } else {
+        addNotification('Action créée avec succès');
+      }
+    } catch (e: any) {
       console.error('Supabase connection error:', e);
+      addNotification(`Erreur de connexion: ${e.message}`, 'error');
     }
   };
 
@@ -424,15 +446,21 @@ export default function App() {
           name: updatedAction.name,
           status: updatedAction.status,
           priority: updatedAction.priority,
-          start_date: updatedAction.startDate,
-          end_date: updatedAction.endDate,
+          start_date: updatedAction.startDate || null,
+          end_date: updatedAction.endDate || null,
           duration: updatedAction.duration,
           dependencies: updatedAction.dependencies,
           comments: updatedAction.comments
         }]);
-      if (error) console.error('Supabase action upsert error:', error);
-    } catch (e) {
+      if (error) {
+        console.error('Supabase action upsert error:', error);
+        addNotification(`Erreur de mise à jour: ${error.message}`, 'error');
+      } else {
+        addNotification('Action mise à jour');
+      }
+    } catch (e: any) {
       console.error('Supabase connection error:', e);
+      addNotification(`Erreur de connexion: ${e.message}`, 'error');
     }
   };
 
@@ -478,38 +506,47 @@ export default function App() {
   };
 
   const handleSaveProject = async (projectData: Partial<Project>) => {
-    let updatedProjects: Project[];
+    let projectToSync: Project;
+    
     if (editingProject && editingProject !== 'new') {
-      updatedProjects = projects.map(p => p.id === editingProject.id ? { ...p, ...projectData } as Project : p);
+      projectToSync = { ...editingProject, ...projectData } as Project;
+      setProjects(prev => prev.map(p => p.id === projectToSync.id ? projectToSync : p));
     } else {
-      const newProject: Project = {
+      projectToSync = {
         id: crypto.randomUUID(),
-        name: projectData.name || 'New Project',
+        name: projectData.name || 'Nouveau Projet',
         color: projectData.color || PROJECT_COLORS[projects.length % PROJECT_COLORS.length],
         status: projectData.status || 'Non commencé',
         startDate: projectData.startDate,
         endDate: projectData.endDate,
       };
-      updatedProjects = [...projects, newProject];
+      setProjects(prev => [...prev, projectToSync]);
     }
-    setProjects(updatedProjects);
+    
     setEditingProject(null);
 
     // Supabase Sync
     try {
       const { error } = await supabase
         .from('projects')
-        .upsert(updatedProjects.map(p => ({
-          id: p.id,
-          name: p.name,
-          color: p.color,
-          status: p.status,
-          start_date: p.startDate,
-          end_date: p.endDate
-        })));
-      if (error) console.error('Supabase sync error:', error);
-    } catch (e) {
+        .upsert([{
+          id: projectToSync.id,
+          name: projectToSync.name,
+          color: projectToSync.color,
+          status: projectToSync.status,
+          start_date: projectToSync.startDate || null,
+          end_date: projectToSync.endDate || null
+        }]);
+      
+      if (error) {
+        console.error('Supabase sync error:', error);
+        addNotification(`Erreur projet: ${error.message}`, 'error');
+      } else {
+        addNotification('Projet sauvegardé');
+      }
+    } catch (e: any) {
       console.error('Supabase connection error:', e);
+      addNotification(`Erreur de connexion: ${e.message}`, 'error');
     }
   };
 
@@ -574,19 +611,33 @@ export default function App() {
     );
   };
 
-  if (!supabaseUrl || supabaseUrl.includes('placeholder')) {
+  if (!supabaseUrl || supabaseUrl.includes('placeholder') || supabaseError) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-slate-50 p-6 text-center">
         <div className="bg-white p-8 rounded-2xl shadow-xl border border-slate-200 max-w-md">
           <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
-          <h2 className="text-xl font-bold text-slate-900 mb-2">Configuration Supabase manquante</h2>
+          <h2 className="text-xl font-bold text-slate-900 mb-2">
+            {supabaseError ? 'Erreur Supabase' : 'Configuration Supabase manquante'}
+          </h2>
           <p className="text-sm text-slate-500 mb-6">
-            Veuillez configurer les variables <strong>VITE_SUPABASE_URL</strong> et <strong>VITE_SUPABASE_ANON_KEY</strong> dans le menu <strong>Settings &gt; Secrets</strong> d'AI Studio pour activer la synchronisation.
+            {supabaseError 
+              ? `Une erreur est survenue lors de la connexion à votre base de données : ${supabaseError}`
+              : "Veuillez configurer les variables VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY dans le menu Settings > Secrets d'AI Studio pour activer la synchronisation."
+            }
           </p>
           <div className="text-left bg-slate-50 p-4 rounded-lg border border-slate-100 font-mono text-[10px] text-slate-400">
             URL: {supabaseUrl || 'Non définie'}<br/>
-            Key: {supabaseAnonKey ? 'Définie (masquée)' : 'Non définie'}
+            Key: {supabaseAnonKey ? 'Définie (masquée)' : 'Non définie'}<br/>
+            {supabaseError && <>Détail: {supabaseError}</>}
           </div>
+          {supabaseError && (
+            <button 
+              onClick={() => window.location.reload()}
+              className="mt-6 w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors"
+            >
+              Réessayer
+            </button>
+          )}
         </div>
       </div>
     );
@@ -594,6 +645,25 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#F8FAFC] text-slate-900 font-sans overflow-hidden">
+      {/* Notifications */}
+      <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+        {notifications.map(n => (
+          <motion.div
+            key={n.id}
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className={cn(
+              "px-4 py-3 rounded-xl shadow-lg border text-sm font-medium flex items-center gap-2 min-w-[200px]",
+              n.type === 'success' ? "bg-white border-emerald-100 text-emerald-700" : "bg-white border-rose-100 text-rose-700"
+            )}
+          >
+            {n.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+            {n.text}
+          </motion.div>
+        ))}
+      </div>
+
       {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
         <div className="p-6 border-b border-slate-100">
