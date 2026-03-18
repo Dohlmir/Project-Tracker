@@ -29,7 +29,10 @@ import {
   Search,
   AlertTriangle,
   Download,
-  Archive
+  Archive,
+  Zap,
+  Pin,
+  Edit2
 } from 'lucide-react';
 import { 
   format, 
@@ -82,13 +85,21 @@ function cn(...inputs: ClassValue[]) {
 
 // --- Types ---
 
-type Priority = 'High' | 'Medium' | 'Low';
+type Priority = 'High' | 'Medium';
 type Status = 'To Do' | 'In Progress' | 'Blocked' | 'Done';
 type ProjectStatus = 'Non commencé' | 'En cours' | 'Terminé' | 'Bloqué';
 
 interface Comment {
   id: string;
   actionId: string;
+  projectId: string;
+  text: string;
+  author: string;
+  timestamp: string;
+}
+
+interface ProjectComment {
+  id: string;
   projectId: string;
   text: string;
   author: string;
@@ -106,6 +117,8 @@ interface Action {
   duration?: number;
   dependencies: string[];
   comments: Comment[];
+  isPinned?: boolean;
+  isTodo?: boolean;
 }
 
 interface Project {
@@ -115,6 +128,8 @@ interface Project {
   startDate?: string;
   endDate?: string;
   status: ProjectStatus;
+  category?: string;
+  notes?: string;
 }
 
 interface TimeLog {
@@ -122,6 +137,7 @@ interface TimeLog {
   projectId: string;
   actionId?: string;
   hours: number;
+  estimatedHours?: number;
   date: string;
   createdAt: string;
 }
@@ -138,7 +154,6 @@ const STATUS_COLORS: Record<Status, string> = {
 const PRIORITY_COLORS: Record<Priority, string> = {
   'High': 'bg-rose-500',
   'Medium': 'bg-amber-500',
-  'Low': 'bg-emerald-500',
 };
 
 const PROJECT_STATUS_COLORS: Record<ProjectStatus, string> = {
@@ -149,7 +164,8 @@ const PROJECT_STATUS_COLORS: Record<ProjectStatus, string> = {
 };
 
 const PROJECT_COLORS = [
-  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#14b8a6'
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#14b8a6',
+  '#f97316', '#84cc16', '#6366f1', '#d946ef', '#f43f5e', '#1e293b', '#475569', '#7c3aed'
 ];
 
 // --- Components ---
@@ -159,12 +175,14 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [actions, setActions] = useState<Action[]>([]);
   const [timeLogs, setTimeLogs] = useState<TimeLog[]>([]);
+  const [projectComments, setProjectComments] = useState<ProjectComment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([]);
   const [selectedStatuses, setSelectedStatuses] = useState<Status[]>([]);
-  const [view, setView] = useState<'list' | 'gantt' | 'history' | 'time' | 'archives'>('list');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [view, setView] = useState<'list' | 'gantt' | 'history' | 'time' | 'archives' | 'projects' | 'todo'>('list');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editingProject, setEditingProject] = useState<Project | 'new' | null>(null);
@@ -198,7 +216,9 @@ export default function App() {
           color: p.color,
           status: p.status,
           startDate: p.start_date,
-          endDate: p.end_date
+          endDate: p.end_date,
+          category: p.category,
+          notes: p.notes
         }));
         setProjects(formattedProjects);
 
@@ -218,9 +238,26 @@ export default function App() {
           endDate: a.end_date,
           duration: a.duration,
           dependencies: a.dependencies || [],
-          comments: a.comments || []
+          comments: a.comments || [],
+          estimatedHours: a.estimated_hours,
+          isPinned: a.is_pinned,
+          isTodo: a.is_todo
         }));
         setActions(formattedActions);
+
+        // Fetch Project Comments
+        const { data: pCommentsData, error: pCommentsError } = await supabase
+          .from('project_comments')
+          .select('*');
+        if (!pCommentsError) {
+          setProjectComments((pCommentsData || []).map(pc => ({
+            id: pc.id,
+            projectId: pc.project_id,
+            text: pc.text,
+            author: pc.author,
+            timestamp: pc.timestamp
+          })));
+        }
 
         // Fetch Time Logs
         const { data: logsData, error: logsError } = await supabase
@@ -375,6 +412,21 @@ export default function App() {
     });
   };
 
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    projects.forEach(p => {
+      if (p.category) cats.add(p.category);
+    });
+    return Array.from(cats).sort();
+  }, [projects]);
+
+  const filteredProjects = useMemo(() => {
+    return projects.filter(project => {
+      const matchesCategory = selectedCategories.length === 0 || (project.category && selectedCategories.includes(project.category));
+      return matchesCategory;
+    });
+  }, [projects, selectedCategories]);
+
   const calculatedActions = useMemo(() => calculateCriticalPath(actions), [actions]);
 
   const filteredActions = useMemo(() => {
@@ -393,9 +445,11 @@ export default function App() {
       const matchesProject = selectedProjectIds.length === 0 || selectedProjectIds.includes(action.projectId);
       const matchesPriority = selectedPriorities.length === 0 || selectedPriorities.includes(action.priority);
       const matchesStatus = selectedStatuses.length === 0 || selectedStatuses.includes(action.status);
-      return matchesProject && matchesPriority && matchesStatus;
+      const matchesCategory = selectedCategories.length === 0 || (project?.category && selectedCategories.includes(project.category));
+      
+      return matchesProject && matchesPriority && matchesStatus && matchesCategory;
     });
-  }, [calculatedActions, selectedProjectIds, selectedPriorities, selectedStatuses, view, projects]);
+  }, [calculatedActions, selectedProjectIds, selectedPriorities, selectedStatuses, selectedCategories, view, projects]);
 
   const togglePriorityFilter = (priority: Priority) => {
     setSelectedPriorities(prev => 
@@ -408,7 +462,9 @@ export default function App() {
     const newAction: Action = {
       ...action,
       id: crypto.randomUUID(),
-      comments: []
+      comments: [],
+      isPinned: action.isPinned || false,
+      isTodo: action.isTodo || false
     };
     const updatedActions = [...actions, newAction];
     setActions(updatedActions);
@@ -428,7 +484,9 @@ export default function App() {
           end_date: newAction.endDate || null,
           duration: newAction.duration,
           dependencies: newAction.dependencies,
-          comments: newAction.comments
+          comments: newAction.comments,
+          is_pinned: newAction.isPinned,
+          is_todo: newAction.isTodo
         }]);
       if (error) {
         console.error('Supabase action insert error:', error);
@@ -462,7 +520,9 @@ export default function App() {
           end_date: updatedAction.endDate || null,
           duration: updatedAction.duration,
           dependencies: updatedAction.dependencies,
-          comments: updatedAction.comments
+          comments: updatedAction.comments,
+          is_pinned: updatedAction.isPinned || false,
+          is_todo: updatedAction.isTodo || false
         }]);
       if (error) {
         console.error('Supabase action upsert error:', error);
@@ -531,6 +591,8 @@ export default function App() {
         status: projectData.status || 'Non commencé',
         startDate: projectData.startDate,
         endDate: projectData.endDate,
+        category: projectData.category,
+        notes: projectData.notes
       };
       setProjects(prev => [...prev, projectToSync]);
     }
@@ -547,7 +609,9 @@ export default function App() {
           color: projectToSync.color,
           status: projectToSync.status,
           start_date: projectToSync.startDate || null,
-          end_date: projectToSync.endDate || null
+          end_date: projectToSync.endDate || null,
+          category: projectToSync.category || null,
+          notes: projectToSync.notes || null
         }]);
       
       if (error) {
@@ -578,10 +642,68 @@ export default function App() {
         project_id: newLog.projectId,
         action_id: newLog.actionId,
         hours: newLog.hours,
+        estimated_hours: newLog.estimatedHours,
         date: newLog.date,
         created_at: newLog.createdAt
       }]);
       if (error) console.error('Supabase time log insert error:', error);
+    } catch (e) {
+      console.error('Supabase connection error:', e);
+    }
+  };
+
+  const handleUpdateComment = async (actionId: string, commentId: string, newText: string) => {
+    const action = actions.find(a => a.id === actionId);
+    if (!action) return;
+
+    const updatedComments = action.comments.map(c => 
+      c.id === commentId ? { ...c, text: newText } : c
+    );
+
+    handleUpdateAction({ ...action, comments: updatedComments });
+  };
+
+  const handleDeleteComment = async (actionId: string, commentId: string) => {
+    const action = actions.find(a => a.id === actionId);
+    if (!action) return;
+
+    const updatedComments = action.comments.filter(c => c.id !== commentId);
+    handleUpdateAction({ ...action, comments: updatedComments });
+  };
+
+  const handleSaveProjectComment = async (projectId: string, text: string) => {
+    if (!text.trim()) return;
+    
+    const newComment: ProjectComment = {
+      id: crypto.randomUUID(),
+      projectId,
+      text,
+      author: 'User',
+      timestamp: new Date().toISOString()
+    };
+
+    setProjectComments(prev => [...prev, newComment]);
+
+    try {
+      const { error } = await supabase
+        .from('project_comments')
+        .insert([{
+          id: newComment.id,
+          project_id: newComment.projectId,
+          text: newComment.text,
+          author: newComment.author,
+          timestamp: newComment.timestamp
+        }]);
+      if (error) console.error('Supabase project comment error:', error);
+    } catch (e) {
+      console.error('Supabase connection error:', e);
+    }
+  };
+
+  const handleDeleteProjectComment = async (id: string) => {
+    setProjectComments(prev => prev.filter(c => c.id !== id));
+    try {
+      await supabase.from('project_comments').delete().eq('id', id);
     } catch (e) {
       console.error('Supabase connection error:', e);
     }
@@ -756,7 +878,7 @@ export default function App() {
               <div>
                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Priorité</label>
                 <div className="flex flex-wrap gap-1">
-                  {(['High', 'Medium', 'Low'] as Priority[]).map(priority => (
+                  {(['High', 'Medium'] as Priority[]).map(priority => (
                     <button
                       key={priority}
                       onClick={() => togglePriorityFilter(priority)}
@@ -793,6 +915,29 @@ export default function App() {
                   ))}
                 </div>
               </div>
+
+              {/* Category Filter */}
+              {categories.length > 0 && (
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Catégorie</label>
+                  <div className="flex flex-wrap gap-1">
+                    {categories.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat])}
+                        className={cn(
+                          "px-2 py-1 rounded text-[10px] font-bold transition-all border",
+                          selectedCategories.includes(cat) 
+                            ? "bg-slate-900 text-white border-slate-900" 
+                            : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
+                        )}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -857,7 +1002,27 @@ export default function App() {
                 )}
               >
                 <Clock className="w-4 h-4" />
-                Temps Passé
+                Temps
+              </button>
+              <button 
+                onClick={() => setView('projects')}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  view === 'projects' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                <FolderOpen className="w-4 h-4" />
+                Projets
+              </button>
+              <button 
+                onClick={() => setView('todo')}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  view === 'todo' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                )}
+              >
+                <CheckSquare className="w-4 h-4" />
+                To-Do
               </button>
               <button 
                 onClick={() => setView('archives')}
@@ -889,47 +1054,69 @@ export default function App() {
           {view === 'list' ? (
             <ListView 
               actions={filteredActions} 
-              projects={projects}
+              projects={filteredProjects}
               onEdit={(a) => {
                 setEditingAction(a);
                 setIsModalOpen(true);
               }}
               onDelete={handleDeleteAction}
               onAddComment={handleAddQuickComment}
+              onUpdateAction={handleUpdateAction}
             />
           ) : view === 'gantt' ? (
             <GanttView 
-              actions={filteredActions} 
-              projects={projects}
+              actions={calculateCriticalPath(filteredActions)} 
+              projects={filteredProjects}
               onEdit={(a) => {
                 setEditingAction(a);
                 setIsModalOpen(true);
               }}
               onUpdateAction={handleUpdateAction}
             />
-          ) : view === 'time' ? (
-            <TimeTrackingView 
-              projects={projects}
-              actions={actions}
-              timeLogs={timeLogs}
-              onAddTimeLog={handleAddTimeLog}
-              onDeleteTimeLog={handleDeleteTimeLog}
-            />
-          ) : view === 'archives' ? (
-            <ArchivesView 
-              projects={projects.filter(p => p.status === 'Terminé')}
-              actions={actions}
-              timeLogs={timeLogs}
-              onEditProject={(p) => setEditingProject(p)}
+          ) : view === 'history' ? (
+            <ActivityFeed 
+              actions={calculateCriticalPath(filteredActions)}
+              projects={filteredProjects}
               onEditAction={(a) => {
                 setEditingAction(a);
                 setIsModalOpen(true);
               }}
             />
+          ) : view === 'time' ? (
+            <TimeTrackingView 
+              projects={filteredProjects}
+              actions={actions}
+              timeLogs={timeLogs}
+              onAddTimeLog={handleAddTimeLog}
+              onDeleteTimeLog={handleDeleteTimeLog}
+            />
+          ) : view === 'projects' ? (
+            <ProjectDashboardView 
+              projects={filteredProjects}
+              actions={actions}
+              projectComments={projectComments}
+              onSaveComment={handleSaveProjectComment}
+              onDeleteComment={handleDeleteProjectComment}
+              onEditAction={(a) => {
+                setEditingAction(a);
+                setIsModalOpen(true);
+              }}
+              onTogglePin={(a) => handleUpdateAction({ ...a, isPinned: !a.isPinned })}
+            />
+          ) : view === 'todo' ? (
+            <TodoListView 
+              actions={filteredActions}
+              projects={filteredProjects}
+              onUpdateAction={handleUpdateAction}
+              onAddTimeLog={handleAddTimeLog}
+              timeLogs={timeLogs}
+            />
           ) : (
-            <ActivityFeed 
-              actions={calculatedActions}
-              projects={projects}
+            <ArchivesView 
+              projects={filteredProjects.filter(p => p.status === 'Terminé')}
+              actions={actions}
+              timeLogs={timeLogs}
+              onEditProject={(p) => setEditingProject(p)}
               onEditAction={(a) => {
                 setEditingAction(a);
                 setIsModalOpen(true);
@@ -965,6 +1152,305 @@ export default function App() {
 }
 
 // --- Sub-Components ---
+
+function ProjectDashboardView({ projects, actions, projectComments, onSaveComment, onDeleteComment, onEditAction, onTogglePin }: {
+  projects: Project[],
+  actions: Action[],
+  projectComments: ProjectComment[],
+  onSaveComment: (projectId: string, text: string) => void,
+  onDeleteComment: (id: string) => void,
+  onEditAction: (a: Action) => void,
+  onTogglePin: (a: Action) => void
+}) {
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(projects[0]?.id || null);
+  const [newComment, setNewComment] = useState('');
+
+  const selectedProject = projects.find(p => p.id === selectedProjectId);
+  const projectActions = actions.filter(a => a.projectId === selectedProjectId);
+  const pinnedActions = projectActions.filter(a => a.isPinned);
+  const comments = projectComments.filter(c => c.projectId === selectedProjectId);
+
+  const stats = {
+    todo: projectActions.filter(a => a.status === 'To Do').length,
+    inProgress: projectActions.filter(a => a.status === 'In Progress').length,
+    done: projectActions.filter(a => a.status === 'Done').length,
+    blocked: projectActions.filter(a => a.status === 'Blocked').length,
+  };
+
+  if (!selectedProject) return <div className="p-8 text-center text-slate-400">Aucun projet sélectionné</div>;
+
+  return (
+    <div className="h-full flex flex-col bg-slate-50 overflow-hidden">
+      <div className="p-6 border-b border-slate-200 bg-white flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <select 
+            value={selectedProjectId || ''} 
+            onChange={e => setSelectedProjectId(e.target.value)}
+            className="text-lg font-bold bg-transparent border-none focus:ring-0 cursor-pointer"
+          >
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          {selectedProject.category && (
+            <span className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold uppercase rounded-md tracking-wider">
+              {selectedProject.category}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-8 space-y-8">
+        {/* Stats Grid */}
+        <div className="grid grid-cols-4 gap-6">
+          {[
+            { label: 'À Faire', value: stats.todo, color: 'text-slate-600', bg: 'bg-slate-100' },
+            { label: 'En Cours', value: stats.inProgress, color: 'text-blue-600', bg: 'bg-blue-50' },
+            { label: 'Terminé', value: stats.done, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+            { label: 'Bloqué', value: stats.blocked, color: 'text-rose-600', bg: 'bg-rose-50' },
+          ].map(stat => (
+            <div key={stat.label} className={cn("p-6 rounded-2xl border border-white shadow-sm", stat.bg)}>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{stat.label}</p>
+              <p className={cn("text-3xl font-black", stat.color)}>{stat.value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-3 gap-8">
+          {/* Pinned Actions */}
+          <div className="col-span-1 space-y-4">
+            <div className="flex items-center gap-2 mb-2">
+              <ArrowUp className="w-4 h-4 text-blue-600" />
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Actions Épinglées</h3>
+            </div>
+            <div className="space-y-3">
+              {pinnedActions.map(action => (
+                <div 
+                  key={action.id} 
+                  className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-all cursor-pointer group"
+                  onClick={() => onEditAction(action)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-bold text-slate-800 leading-tight">{action.name}</p>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); onTogglePin(action); }}
+                      className="text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded uppercase", STATUS_COLORS[action.status])}>
+                      {action.status}
+                    </span>
+                  </div>
+                </div>
+              ))}
+              {pinnedActions.length === 0 && (
+                <p className="text-xs text-slate-400 italic">Aucune action épinglée.</p>
+              )}
+            </div>
+          </div>
+
+          {/* Project Notes/Comments */}
+          <div className="col-span-2 space-y-4">
+            <div className="flex items-center gap-2 mb-2">
+              <MessageSquare className="w-4 h-4 text-blue-600" />
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Notes & Commentaires Projet</h3>
+            </div>
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-6">
+              <div className="flex gap-3">
+                <textarea 
+                  value={newComment}
+                  onChange={e => setNewComment(e.target.value)}
+                  placeholder="Ajouter une note ou un commentaire sur le projet..."
+                  className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm min-h-[100px] resize-none"
+                />
+                <button 
+                  onClick={() => { onSaveComment(selectedProjectId!, newComment); setNewComment(''); }}
+                  className="bg-slate-900 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-slate-800 transition-all self-end"
+                >
+                  Ajouter
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {comments.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map(comment => (
+                  <div key={comment.id} className="group relative bg-blue-50/50 p-4 rounded-2xl border border-blue-100/50">
+                    <button 
+                      onClick={() => onDeleteComment(comment.id)}
+                      className="absolute top-2 right-2 p-1 text-slate-400 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                    <p className="text-sm text-slate-700 leading-relaxed">{comment.text}</p>
+                    <div className="mt-2 flex items-center gap-2 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                      <span>{comment.author}</span>
+                      <span>•</span>
+                      <span>{format(parseISO(comment.timestamp), 'dd/MM/yyyy HH:mm')}</span>
+                    </div>
+                  </div>
+                ))}
+                {comments.length === 0 && (
+                  <p className="text-center text-slate-400 text-sm py-8 italic">Aucune note pour le moment.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TodoListView({ actions, projects, onUpdateAction, onAddTimeLog, timeLogs }: {
+  actions: Action[],
+  projects: Project[],
+  onUpdateAction: (a: Action) => void,
+  onAddTimeLog: (log: any) => void,
+  timeLogs: TimeLog[]
+}) {
+  const todoActions = actions.filter(a => a.isTodo);
+  const [timeInput, setTimeInput] = useState<Record<string, number>>({});
+  const [estimatedInput, setEstimatedInput] = useState<Record<string, number>>({});
+
+  const today = new Date().toISOString().split('T')[0];
+  
+  const todayLogs = timeLogs.filter(log => log.date === today);
+  
+  const totalEstimated = todoActions.reduce((sum, action) => {
+    const log = todayLogs.find(l => l.actionId === action.id);
+    return sum + (log?.estimatedHours || estimatedInput[action.id] || 0);
+  }, 0);
+  
+  const handleLogTime = (action: Action) => {
+    const hours = timeInput[action.id] || 0;
+    const estimatedHours = estimatedInput[action.id] || 0;
+    
+    if (hours <= 0 && estimatedHours <= 0) return;
+
+    onAddTimeLog({
+      projectId: action.projectId,
+      actionId: action.id,
+      hours,
+      estimatedHours,
+      date: today
+    });
+    
+    // Clear inputs after logging
+    setTimeInput(prev => ({ ...prev, [action.id]: 0 }));
+    setEstimatedInput(prev => ({ ...prev, [action.id]: 0 }));
+  };
+
+  return (
+    <div className="h-full flex flex-col bg-slate-50 overflow-hidden">
+      <div className="p-8 border-b border-slate-200 bg-white">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Ma Liste To-Do</h2>
+          <div className="flex items-center gap-6">
+            <div className="text-right">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Actions</p>
+              <p className="text-xl font-black text-slate-900">{todoActions.length}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Est. Aujourd'hui</p>
+              <p className="text-xl font-black text-blue-600">{totalEstimated}h</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-8">
+        <div className="max-w-4xl mx-auto space-y-4">
+          {todoActions.map(action => {
+            const project = projects.find(p => p.id === action.projectId);
+            const todayLog = todayLogs.find(l => l.actionId === action.id);
+            
+            return (
+              <div key={action.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all flex items-center gap-6">
+                <button 
+                  onClick={() => onUpdateAction({ ...action, status: action.status === 'Done' ? 'To Do' : 'Done' })}
+                  className={cn(
+                    "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
+                    action.status === 'Done' ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200 text-transparent hover:border-blue-500"
+                  )}
+                >
+                  <CheckSquare className="w-4 h-4" />
+                </button>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: project?.color }} />
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{project?.name}</span>
+                    {project?.category && (
+                      <span className="px-1 py-0.5 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase rounded border border-slate-100">
+                        {project.category}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className={cn("text-base font-bold text-slate-800 truncate", action.status === 'Done' && "line-through text-slate-400")}>
+                    {action.name}
+                  </h3>
+                </div>
+
+                <div className="flex items-center gap-6 shrink-0">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estimé (h)</label>
+                    <input 
+                      type="number" 
+                      step="0.5"
+                      min="0"
+                      placeholder={todayLog?.estimatedHours?.toString() || "0h"}
+                      value={estimatedInput[action.id] || ''}
+                      onChange={e => setEstimatedInput({ ...estimatedInput, [action.id]: parseFloat(e.target.value) })}
+                      className="w-16 px-2 py-1.5 bg-blue-50/50 border border-blue-100 rounded-lg text-sm font-bold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Passé (h)</label>
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="number" 
+                        step="0.5"
+                        min="0"
+                        placeholder={todayLog?.hours?.toString() || "0h"}
+                        value={timeInput[action.id] || ''}
+                        onChange={e => setTimeInput({ ...timeInput, [action.id]: parseFloat(e.target.value) })}
+                        className="w-16 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      />
+                      <button 
+                        onClick={() => handleLogTime(action)}
+                        className="p-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-all active:scale-95"
+                        title="Enregistrer"
+                      >
+                        <Clock className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => onUpdateAction({ ...action, isTodo: false })}
+                    className="p-2 text-slate-300 hover:text-rose-600 transition-colors"
+                    title="Retirer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+
+          {todoActions.length === 0 && (
+            <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
+              <CheckCircle2 className="w-12 h-12 text-slate-200 mx-auto mb-4" />
+              <p className="text-slate-500 font-medium">Votre liste To-Do est vide.</p>
+              <p className="text-xs text-slate-400 mt-1">Cochez des actions dans la vue liste pour les ajouter ici.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface CalculatedAction extends Action {
   calculatedStartDate: Date;
@@ -1028,11 +1514,11 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                 .reduce((sum, log) => sum + log.hours, 0);
               
               return (
-                <button
+                <div
                   key={project.id}
                   onClick={() => setSelectedProjectId(project.id)}
                   className={cn(
-                    "w-full text-left p-4 rounded-xl border transition-all group relative",
+                    "w-full text-left p-4 rounded-xl border transition-all group relative cursor-pointer",
                     selectedProjectId === project.id 
                       ? "bg-white border-blue-200 shadow-md ring-1 ring-blue-100" 
                       : "bg-white border-slate-100 hover:border-slate-200 hover:shadow-sm"
@@ -1052,6 +1538,11 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                         <Clock className="w-3 h-3" />
                         {pTotalHours}h
                       </div>
+                      {project.category && (
+                        <div className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase rounded border border-slate-100">
+                          {project.category}
+                        </div>
+                      )}
                     </div>
                     {project.endDate && (
                       <div className="flex items-center gap-1 text-[10px] text-slate-400">
@@ -1069,7 +1560,7 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                   >
                     <MoreVertical className="w-4 h-4 text-slate-400" />
                   </button>
-                </button>
+                </div>
               );
             })
           )}
@@ -1242,15 +1733,57 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
   );
 }
 
-function ListView({ actions, projects, onEdit, onDelete, onAddComment }: { 
+function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateAction }: { 
   actions: CalculatedAction[], 
   projects: Project[], 
   onEdit: (a: Action) => void,
   onDelete: (id: string) => void,
-  onAddComment: (id: string, text: string) => void
+  onAddComment: (id: string, text: string) => void,
+  onUpdateAction: (a: Action) => void
 }) {
   const [quickComments, setQuickComments] = useState<Record<string, string>>({});
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<'name' | 'status' | 'date' | 'category'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  const sortedActions = useMemo(() => {
+    const result = [...actions];
+    result.sort((a, b) => {
+      const projectA = projects.find(p => p.id === a.projectId);
+      const projectB = projects.find(p => p.id === b.projectId);
+
+      let valA: any = '';
+      let valB: any = '';
+
+      if (sortField === 'name') {
+        valA = a.name.toLowerCase();
+        valB = b.name.toLowerCase();
+      } else if (sortField === 'status') {
+        valA = a.status;
+        valB = b.status;
+      } else if (sortField === 'date') {
+        valA = a.startDate || '';
+        valB = b.startDate || '';
+      } else if (sortField === 'category') {
+        valA = (projectA?.category || '').toLowerCase();
+        valB = (projectB?.category || '').toLowerCase();
+      }
+
+      if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+      if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return result;
+  }, [actions, projects, sortField, sortOrder]);
+
+  const toggleSort = (field: 'name' | 'status' | 'date' | 'category') => {
+    if (sortField === field) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('asc');
+    }
+  };
 
   const handleQuickCommentSubmit = (e: React.FormEvent, actionId: string) => {
     e.preventDefault();
@@ -1285,21 +1818,43 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment }: {
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
                   <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Action</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-32">Status</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-24">Date</th>
+                  <th 
+                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600"
+                    onClick={() => toggleSort('name')}
+                  >
+                    Action {sortField === 'name' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                  <th 
+                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-32"
+                    onClick={() => toggleSort('status')}
+                  >
+                    Status {sortField === 'status' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                  <th 
+                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-32"
+                    onClick={() => toggleSort('category')}
+                  >
+                    Catégorie {sortField === 'category' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                  <th 
+                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-24"
+                    onClick={() => toggleSort('date')}
+                  >
+                    Date {sortField === 'date' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
                   <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-24">Alertes</th>
                   <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-20"></th>
                 </tr>
               </thead>
               <tbody>
-                {actions.map(action => {
+                {sortedActions.map(action => {
                   const project = projects.find(p => p.id === action.projectId);
                   const isArchived = project?.status === 'Terminé';
                   const isExpanded = expandedActionId === action.id;
                   
-                  // Critical Rule: Priority High AND has dependencies
-                  const showCriticalBadge = action.priority === 'High' && (action.dependencies.length > 0 || actions.some(a => a.dependencies.includes(action.id)));
+                  // Critical Rule: Has dependencies OR is a dependency of another action
+                  const hasDependencies = action.dependencies.length > 0 || actions.some(a => a.dependencies.includes(action.id));
+                  const showCriticalBadge = hasDependencies;
 
                   return (
                     <React.Fragment key={action.id}>
@@ -1332,8 +1887,7 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment }: {
                               <div className={cn(
                                 "px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider",
                                 action.priority === 'High' ? "bg-rose-50 text-rose-600 border border-rose-100" :
-                                action.priority === 'Medium' ? "bg-amber-50 text-amber-600 border border-amber-100" :
-                                "bg-emerald-50 text-emerald-600 border border-emerald-100"
+                                "bg-slate-50 text-slate-600 border border-slate-100"
                               )}>
                                 {action.priority}
                               </div>
@@ -1355,6 +1909,15 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment }: {
                             {action.status === 'In Progress' && <Clock className="w-2.5 h-2.5" />}
                             {action.status}
                           </div>
+                        </td>
+                        <td className="px-4 py-1.5">
+                          {project?.category ? (
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[9px] font-bold uppercase rounded tracking-wider border border-slate-200">
+                              {project.category}
+                            </span>
+                          ) : (
+                            <span className="text-[9px] text-slate-300 italic">Aucune</span>
+                          )}
                         </td>
                         <td className="px-4 py-1.5">
                           <div className="flex items-center gap-1 text-slate-400">
@@ -1404,6 +1967,24 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment }: {
                           <td colSpan={6} className="px-12 py-4">
                             <div className="space-y-4">
                               <div className="space-y-3">
+                                {action.dependencies.length > 0 && (
+                                  <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 mb-4">
+                                    <h4 className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                      <Zap className="w-3 h-3" />
+                                      Dépendances (Bloqué par)
+                                    </h4>
+                                    <div className="flex flex-wrap gap-2">
+                                      {action.dependencies.map(depId => {
+                                        const dep = actions.find(a => a.id === depId);
+                                        return (
+                                          <div key={depId} className="px-2 py-1 bg-white border border-amber-200 rounded-lg text-[10px] font-bold text-slate-700 shadow-sm">
+                                            {dep?.name || 'Action inconnue'}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
                                 {action.comments.length === 0 ? (
                                   <p className="text-xs text-slate-400 italic">Aucun commentaire pour le moment.</p>
                                 ) : (
@@ -1900,17 +2481,32 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
 }) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [dragging, setDragging] = useState<{ id: string, startX: number, originalStart: Date, currentDelta: number } | null>(null);
+  const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>(projects.map(p => p.id));
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [filterSearch, setFilterSearch] = useState('');
+  const [showCriticalOnly, setShowCriticalOnly] = useState(false);
   
   const days = useMemo(() => {
-    const start = startOfWeek(startOfMonth(currentDate));
-    const end = endOfWeek(endOfMonth(currentDate));
+    // Show 3 months: previous, current, next
+    const start = startOfMonth(addDays(currentDate, -30));
+    const end = endOfMonth(addDays(currentDate, 30));
     return eachDayOfInterval({ start, end });
   }, [currentDate]);
 
+  const filteredActions = useMemo(() => {
+    let base = actions.filter(a => visibleProjectIds.includes(a.projectId));
+    if (showCriticalOnly) {
+      // Actions that have dependencies OR are dependencies of others
+      const allDepIds = new Set(actions.flatMap(a => a.dependencies));
+      base = base.filter(a => a.dependencies.length > 0 || allDepIds.has(a.id));
+    }
+    return base;
+  }, [actions, visibleProjectIds, showCriticalOnly]);
+
   const groupedActions = useMemo(() => {
     const groups: { project: Project, actions: CalculatedAction[] }[] = [];
-    projects.forEach(project => {
-      const projectActions = actions
+    projects.filter(p => visibleProjectIds.includes(p.id)).forEach(project => {
+      const projectActions = filteredActions
         .filter(a => a.projectId === project.id)
         .sort((a, b) => a.calculatedStartDate.getTime() - b.calculatedStartDate.getTime());
       if (projectActions.length > 0) {
@@ -1918,7 +2514,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
       }
     });
     return groups;
-  }, [actions, projects]);
+  }, [filteredActions, projects, visibleProjectIds]);
 
   const flatSortedActions = useMemo(() => {
     return groupedActions.flatMap(g => g.actions);
@@ -1977,12 +2573,14 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
     };
   }, [dragging, actions, onUpdateAction]);
 
-  const sortedActions = useMemo(() => {
-    return [...actions].sort((a, b) => a.calculatedStartDate.getTime() - b.calculatedStartDate.getTime());
-  }, [actions]);
-
   const nextMonth = () => setCurrentDate(addDays(endOfMonth(currentDate), 1));
   const prevMonth = () => setCurrentDate(addDays(startOfMonth(currentDate), -1));
+
+  const toggleProject = (id: string) => {
+    setVisibleProjectIds(prev => 
+      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]
+    );
+  };
 
   // Dependency Line Logic
   const renderDependencyLines = () => {
@@ -2009,12 +2607,12 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
             <path 
               d={`M ${x1} ${y1} L ${x1 + 10} ${y1} L ${x1 + 10} ${y2} L ${x2} ${y2}`}
               fill="none"
-              stroke={action.isCritical && dep.isCritical ? "#ef4444" : "#cbd5e1"}
-              strokeWidth={action.isCritical && dep.isCritical ? "2" : "1"}
-              strokeDasharray={action.isCritical && dep.isCritical ? "" : "4 2"}
+              stroke={showCriticalOnly || (action.isCritical && dep.isCritical) ? "#ef4444" : "#cbd5e1"}
+              strokeWidth={showCriticalOnly || (action.isCritical && dep.isCritical) ? "2" : "1"}
+              strokeDasharray={showCriticalOnly || (action.isCritical && dep.isCritical) ? "" : "4 2"}
               className="transition-all"
             />
-            <circle cx={x2} cy={y2} r="3" fill={action.isCritical && dep.isCritical ? "#ef4444" : "#cbd5e1"} />
+            <circle cx={x2} cy={y2} r="3" fill={showCriticalOnly || (action.isCritical && dep.isCritical) ? "#ef4444" : "#cbd5e1"} />
           </g>
         );
       });
@@ -2022,27 +2620,108 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Gantt Header */}
-      <div className="px-8 py-3 border-b border-slate-100 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-4">
-          <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">{format(currentDate, 'MMMM yyyy')}</h2>
-          <div className="flex gap-1">
-            <button onClick={prevMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
-              <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
+      <div className="px-8 py-3 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white z-30">
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
+            <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">{format(currentDate, 'MMMM yyyy')}</h2>
+            <div className="flex gap-1">
+              <button onClick={prevMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
+                <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
+              </button>
+              <button onClick={nextMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
+                <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+              </button>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3 border-l border-slate-200 pl-6 relative">
+            <button 
+              onClick={() => setShowCriticalOnly(!showCriticalOnly)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-1.5 rounded-xl border transition-all text-xs font-bold uppercase tracking-wider",
+                showCriticalOnly 
+                  ? "bg-rose-600 text-white border-rose-600 shadow-lg shadow-rose-500/20" 
+                  : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+              )}
+            >
+              <Zap className={cn("w-3.5 h-3.5", showCriticalOnly && "fill-current")} />
+              Chemin Critique {showCriticalOnly ? "Actif" : "Inactif"}
             </button>
-            <button onClick={nextMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
-              <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+
+            <button 
+              onClick={() => setIsFilterOpen(!isFilterOpen)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-1.5 rounded-xl border transition-all text-xs font-bold uppercase tracking-wider",
+                visibleProjectIds.length === projects.length 
+                  ? "bg-slate-50 border-slate-200 text-slate-600" 
+                  : "bg-blue-50 border-blue-200 text-blue-600"
+              )}
+            >
+              <Filter className="w-3.5 h-3.5" />
+              Projets ({visibleProjectIds.length}/{projects.length})
+              <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", isFilterOpen && "rotate-180")} />
             </button>
+
+            {isFilterOpen && (
+              <div className="absolute top-full left-6 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 z-[100] animate-in fade-in slide-in-from-top-2 duration-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Filtrer les Projets</h3>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => setVisibleProjectIds(projects.map(p => p.id))}
+                      className="text-[10px] font-bold text-blue-600 hover:underline"
+                    >
+                      Tous
+                    </button>
+                    <button 
+                      onClick={() => setVisibleProjectIds([])}
+                      className="text-[10px] font-bold text-slate-400 hover:underline"
+                    >
+                      Aucun
+                    </button>
+                  </div>
+                </div>
+                
+                <div className="relative mb-3">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                  <input 
+                    type="text"
+                    value={filterSearch}
+                    onChange={e => setFilterSearch(e.target.value)}
+                    placeholder="Rechercher un projet..."
+                    className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+
+                <div className="max-h-64 overflow-y-auto space-y-1 custom-scrollbar pr-2">
+                  {projects
+                    .filter(p => p.name.toLowerCase().includes(filterSearch.toLowerCase()))
+                    .map(p => (
+                    <label key={p.id} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-xl cursor-pointer transition-colors group">
+                      <input 
+                        type="checkbox"
+                        checked={visibleProjectIds.includes(p.id)}
+                        onChange={() => toggleProject(p.id)}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                      <span className="text-xs font-bold text-slate-600 group-hover:text-slate-900 truncate">{p.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-          {actions.length} actions filtrées
+          {filteredActions.length} actions affichées
         </div>
       </div>
 
       {/* Gantt Grid */}
-      <div className="flex-1 overflow-auto relative">
+      <div className="flex-1 overflow-auto relative custom-scrollbar">
         <div className="min-w-max relative">
           {/* SVG Overlay for Connections */}
           <svg className="absolute top-[49px] left-64 pointer-events-none z-0" style={{ width: days.length * 40, height: flatSortedActions.length * 56 }}>
@@ -2051,7 +2730,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
 
           {/* Days Header */}
           <div className="flex border-b border-slate-100 sticky top-0 bg-white z-20">
-            <div className="w-64 shrink-0 border-r border-slate-100 p-4 font-bold text-xs text-slate-400 uppercase tracking-wider">
+            <div className="w-64 shrink-0 border-r border-slate-100 p-4 font-bold text-xs text-slate-400 uppercase tracking-wider bg-white">
               Actions
             </div>
             {days.map(day => (
@@ -2071,42 +2750,49 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
 
           {/* Action Rows */}
           {groupedActions.map((group, groupIdx) => (
-            <div key={group.project.id} className={cn(
-              "contents",
-              groupIdx % 2 === 0 ? "bg-white" : "bg-slate-50/30"
-            )}>
+            <div key={group.project.id} className="contents">
               {group.actions.map((action, actionIdx) => {
                 const start = action.calculatedStartDate;
                 const end = action.calculatedEndDate;
                 const startIdx = days.findIndex(d => isSameDay(d, start));
-                const duration = differenceInDays(end, start) + 1;
+                const endIdx = days.findIndex(d => isSameDay(d, end));
+                
+                // Handle actions starting before or ending after the current view
+                const visibleStartIdx = startIdx === -1 ? 0 : startIdx;
+                const visibleEndIdx = endIdx === -1 ? days.length - 1 : endIdx;
+                const visibleDuration = visibleEndIdx - visibleStartIdx + 1;
+
+                const isLate = action.status !== 'Done' && action.endDate && parseISO(action.endDate) < new Date();
+                const isHighPriority = action.priority === 'High';
+                const useRed = isHighPriority || isLate;
                 
                 return (
                   <div key={action.id} className={cn(
                     "flex border-b border-slate-50 hover:bg-blue-50/30 transition-colors group relative z-10",
-                    groupIdx % 2 === 1 && "bg-slate-50/50"
+                    groupIdx % 2 === 1 && "bg-slate-50/20"
                   )}>
                     <div 
-                      className="w-64 shrink-0 border-r border-slate-100 p-3 flex items-center gap-3 cursor-pointer relative"
+                      className="w-64 shrink-0 border-r border-slate-100 p-3 flex items-center gap-3 cursor-pointer relative bg-white group-hover:bg-blue-50/30"
                       onClick={() => onEdit(action)}
                     >
-                      {actionIdx === 0 && (
-                        <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: group.project.color }} />
-                      )}
+                      <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: group.project.color }} />
                       <div className="flex-1 min-w-0">
-                        {actionIdx === 0 && (
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter truncate">{group.project.name}</span>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter truncate">{group.project.name}</span>
+                          {group.project.category && (
+                            <span className="px-1 py-0.5 bg-slate-50 text-slate-400 text-[7px] font-bold uppercase rounded border border-slate-100">
+                              {group.project.category}
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2">
                           <span className={cn(
                             "text-sm font-semibold truncate block",
-                            action.isCritical ? "text-rose-600" : "text-slate-700"
+                            useRed ? "text-rose-600" : "text-slate-700"
                           )}>
                             {action.name}
                           </span>
-                          {action.hasOverlap && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                          {action.isCritical && <Zap className="w-3 h-3 text-rose-500 fill-current" />}
                         </div>
                       </div>
                     </div>
@@ -2123,36 +2809,57 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                       ))}
                       
                       {/* Action Bar */}
-                      {startIdx !== -1 && (
+                      {(startIdx !== -1 || endIdx !== -1) && (
                         <div 
                           onMouseDown={(e) => handleMouseDown(e, action)}
-                          title={`${action.priority} Priority${action.isCritical ? ' (Critical Path)' : ''}. ${action.hasOverlap ? "Attention : chevauchement de dépendance" : (action.isCritical ? "Marge : 0j" : `Marge: ${action.slack}j`)}`}
+                          title={`${action.priority} Priority. Marge: ${action.slack}j. ${isLate ? 'EN RETARD' : ''}`}
                           className={cn(
-                            "absolute top-1/2 -translate-y-1/2 h-7 rounded-md shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.02] hover:shadow-md z-10 overflow-hidden select-none",
-                            action.isCritical ? "border-rose-300 bg-rose-50/50" : "border-slate-200 bg-white",
-                            !action.isCritical && action.slack > 0 && "opacity-80",
-                            group.project?.status === 'Terminé' && "grayscale-[0.8] opacity-40",
+                            "absolute top-1/2 -translate-y-1/2 h-8 rounded-lg shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md z-10 overflow-hidden select-none",
+                            useRed ? "border-rose-300 bg-rose-50/80" : "border-slate-200",
+                            action.isCritical && "ring-1 ring-rose-500 ring-offset-1",
                             dragging?.id === action.id && "ring-2 ring-blue-500 ring-offset-2 scale-[1.02] opacity-100 z-50 cursor-grabbing"
                           )}
                           style={{ 
-                            left: `${(startIdx + (dragging?.id === action.id ? dragging.currentDelta : 0)) * 40 + 4}px`, 
-                            width: `${duration * 40 - 8}px`,
-                            borderColor: action.isCritical ? '#fecdd3' : (action.slack > 0 ? '#e2e8f0' : `${group.project?.color}40`),
-                            color: action.isCritical ? '#e11d48' : (action.slack > 0 ? '#64748b' : '#334155')
+                            left: `${(visibleStartIdx + (dragging?.id === action.id ? dragging.currentDelta : 0)) * 40 + 4}px`, 
+                            width: `${visibleDuration * 40 - 8}px`,
+                            backgroundColor: useRed ? undefined : `${group.project.color}15`,
+                            borderColor: useRed ? undefined : `${group.project.color}40`,
                           }}
                           onClick={() => onEdit(action)}
                         >
-                          {/* Priority Indicator Strip */}
+                          {/* Color Strip */}
                           <div 
-                            className={cn("w-1 h-full shrink-0", action.isCritical ? "bg-rose-500" : PRIORITY_COLORS[action.priority])} 
+                            className="w-1.5 h-full shrink-0" 
+                            style={{ backgroundColor: useRed ? '#ef4444' : group.project.color }} 
                           />
-                          <div className="flex items-center justify-between w-full px-2 overflow-hidden">
-                            <span className="text-[10px] font-bold truncate whitespace-nowrap">
-                              {action.name}
-                            </span>
-                            {action.hasOverlap && (
-                              <AlertTriangle className={cn("w-3 h-3 shrink-0 ml-1", action.isCritical ? "text-rose-500" : "text-amber-500")} />
-                            )}
+                          <div className="flex items-center justify-between w-full px-3 overflow-hidden">
+                            <div className="flex flex-col min-w-0">
+                              <span className={cn(
+                                "text-[11px] font-bold truncate whitespace-nowrap",
+                                useRed ? "text-rose-700" : "text-slate-700"
+                              )}>
+                                {action.name}
+                              </span>
+                              {action.endDate && action.status !== 'Done' && (
+                                <span className={cn(
+                                  "text-[9px] font-black uppercase tracking-tighter",
+                                  useRed ? "text-rose-600/70" : "text-slate-500/70"
+                                )}>
+                                  {differenceInDays(parseISO(action.endDate), new Date()) > 0 
+                                    ? `${differenceInDays(parseISO(action.endDate), new Date())}j restants`
+                                    : differenceInDays(parseISO(action.endDate), new Date()) === 0
+                                      ? "Dernier jour"
+                                      : "En retard"}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                              {action.isCritical && <Zap className="w-3 h-3 text-rose-500 fill-current" />}
+                              {action.status === 'To Do' && <AlertCircle className="w-3 h-3 text-slate-400" />}
+                              {action.status === 'In Progress' && <Clock className="w-3 h-3 text-blue-500" />}
+                              {action.status === 'Blocked' && <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />}
+                              {action.status === 'Done' && <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -2169,12 +2876,6 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                 <Filter className="w-8 h-8 text-slate-300" />
               </div>
               <p className="text-slate-400 font-medium">Aucun projet sélectionné ou aucune action disponible.</p>
-            </div>
-          )}
-          
-          {sortedActions.length === 0 && (
-            <div className="p-12 text-center text-slate-400 font-medium">
-              No actions to display in Gantt view.
             </div>
           )}
         </div>
@@ -2222,7 +2923,7 @@ function ActivityFeed({ actions, projects, onEditAction }: {
         const timeB = new Date(b.timestamp).getTime();
         return sortOrder === 'desc' ? timeB - timeA : timeA - timeB;
       } else {
-        const priorityMap: Record<Priority, number> = { 'High': 3, 'Medium': 2, 'Low': 1 };
+        const priorityMap: Record<Priority, number> = { 'High': 2, 'Medium': 1 };
         const valA = priorityMap[a.priority];
         const valB = priorityMap[b.priority];
         return sortOrder === 'desc' ? valB - valA : valA - valB;
@@ -2332,14 +3033,16 @@ function ActivityFeed({ actions, projects, onEditAction }: {
   );
 }
 
-function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData, allActions }: { 
+function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData, allActions, onUpdateComment, onDeleteComment }: { 
   isOpen: boolean, 
   onClose: () => void, 
   onSave: (a: any) => void,
   onDelete?: (id: string) => void,
   projects: Project[],
   initialData: Action | null,
-  allActions: Action[]
+  allActions: Action[],
+  onUpdateComment?: (actionId: string, commentId: string, text: string) => void,
+  onDeleteComment?: (actionId: string, commentId: string) => void
 }) {
   const [formData, setFormData] = useState({
     name: initialData?.name || '',
@@ -2350,7 +3053,31 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
     endDate: initialData?.endDate || '',
     duration: initialData?.duration || 7,
     dependencies: initialData?.dependencies || [] as string[],
+    isPinned: initialData?.isPinned || false,
+    isTodo: initialData?.isTodo || false,
   });
+
+  const [depSearch, setDepSearch] = useState('');
+  const groupedActions = useMemo(() => {
+    const groups: { project: Project, actions: Action[] }[] = [];
+    projects.forEach(project => {
+      const projectActions = allActions
+        .filter(a => a.projectId === project.id && a.id !== initialData?.id)
+        .filter(a => {
+          if (!depSearch) return true;
+          return a.name.toLowerCase().includes(depSearch.toLowerCase()) || 
+                 project.name.toLowerCase().includes(depSearch.toLowerCase());
+        });
+      if (projectActions.length > 0) {
+        groups.push({ project, actions: projectActions });
+      }
+    });
+    return groups;
+  }, [allActions, projects, depSearch, initialData]);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentText, setEditingCommentText] = useState('');
+
+  if (!isOpen) return null;
 
   const handleDateChange = (field: 'startDate' | 'endDate', value: string) => {
     setFormData(prev => {
@@ -2418,7 +3145,7 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
         <div className="flex items-center justify-between p-6 border-b border-slate-100">
           <h2 className="text-xl font-bold text-slate-900">
-            {initialData ? 'Edit Action' : 'Create New Action'}
+            {initialData ? 'Modifier Action' : 'Nouvelle Action'}
           </h2>
           <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
             <X className="w-5 h-5 text-slate-400" />
@@ -2426,22 +3153,68 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Active Dependencies Summary */}
+          {formData.dependencies.length > 0 && (
+            <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-[10px] font-black text-amber-600 uppercase tracking-widest">
+                <Zap className="w-3 h-3 fill-current" />
+                Bloqué par {formData.dependencies.length} action(s)
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {formData.dependencies.map(depId => {
+                  const dep = allActions.find(a => a.id === depId);
+                  return (
+                    <div key={depId} className="px-2 py-0.5 bg-white border border-amber-200 rounded-lg text-[10px] font-bold text-slate-700 shadow-sm">
+                      {dep?.name || 'Action inconnue'}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Action Name</label>
-              <input 
-                required
-                type="text" 
-                value={formData.name}
-                onChange={e => setFormData({...formData, name: e.target.value})}
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
-                placeholder="e.g., Finalize design mockups"
-              />
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nom de l'Action</label>
+                <input 
+                  required
+                  type="text" 
+                  value={formData.name}
+                  onChange={e => setFormData({...formData, name: e.target.value})}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+                  placeholder="ex: Finaliser les maquettes..."
+                />
+              </div>
+              <div className="flex items-center gap-3 pt-6">
+                <button 
+                  type="button"
+                  onClick={() => setFormData(prev => ({ ...prev, isPinned: !prev.isPinned }))}
+                  className={cn(
+                    "p-2.5 rounded-xl border transition-all",
+                    formData.isPinned ? "bg-amber-50 border-amber-200 text-amber-600" : "bg-slate-50 border-slate-200 text-slate-400"
+                  )}
+                  title="Epingler"
+                >
+                  <Pin className={cn("w-5 h-5", formData.isPinned && "fill-current")} />
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => setFormData(prev => ({ ...prev, isTodo: !prev.isTodo }))}
+                  className={cn(
+                    "p-2.5 rounded-xl border transition-all",
+                    formData.isTodo ? "bg-emerald-50 border-emerald-200 text-emerald-600" : "bg-slate-50 border-slate-200 text-slate-400"
+                  )}
+                  title="Ajouter à la To-Do"
+                >
+                  <CheckSquare className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Project</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Projet</label>
                 <select 
                   value={formData.projectId}
                   onChange={e => setFormData({...formData, projectId: e.target.value})}
@@ -2452,37 +3225,38 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Priority</label>
-                <select 
-                  value={formData.priority}
-                  onChange={e => setFormData({...formData, priority: e.target.value as Priority})}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
-                >
-                  <option value="High">High</option>
-                  <option value="Medium">Medium</option>
-                  <option value="Low">Low</option>
-                </select>
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Priorité</label>
+                  <select 
+                    value={formData.priority}
+                    onChange={e => setFormData({...formData, priority: e.target.value as Priority})}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+                  >
+                    <option value="Medium">Moyenne</option>
+                    <option value="High">Haute</option>
+                  </select>
+                </div>
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Status</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Statut</label>
                 <select 
                   value={formData.status}
                   onChange={e => setFormData({...formData, status: e.target.value as Status})}
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
                 >
                   <option value="To Do">To Do</option>
-                  <option value="In Progress">In Progress</option>
-                  <option value="Blocked">Blocked</option>
-                  <option value="Done">Done</option>
+                  <option value="In Progress">En cours</option>
+                  <option value="Blocked">Bloqué</option>
+                  <option value="Done">Terminé</option>
                 </select>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Start Date</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Début</label>
                   <input 
                     type="date" 
                     value={formData.startDate}
@@ -2491,7 +3265,7 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">End Date</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Fin</label>
                   <input 
                     type="date" 
                     value={formData.endDate}
@@ -2500,7 +3274,7 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Duration</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Durée (j)</label>
                   <input 
                     type="number" 
                     min="1"
@@ -2514,36 +3288,58 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
 
             {/* Dependencies */}
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Dependencies (Predecessors)</label>
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 max-h-32 overflow-y-auto space-y-1">
-                {allActions.filter(a => a.id !== initialData?.id).map(action => (
-                  <label key={action.id} className="flex items-center gap-2 p-1.5 hover:bg-white rounded-md cursor-pointer transition-all">
-                    <input 
-                      type="checkbox" 
-                      checked={(formData.dependencies || []).includes(action.id)}
-                      onChange={() => toggleDependency(action.id)}
-                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm font-medium text-slate-700 truncate">{action.name}</span>
-                  </label>
-                ))}
-                {allActions.length <= 1 && (
-                  <p className="text-xs text-slate-400 italic p-2">No other actions available to link.</p>
-                )}
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Dépendances (Prédécesseurs)</label>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input 
+                    type="text"
+                    value={depSearch}
+                    onChange={e => setDepSearch(e.target.value)}
+                    placeholder="Rechercher une action ou un projet..."
+                    className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+                <div className="max-h-40 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+                  {groupedActions.map(group => (
+                    <div key={group.project.id} className="space-y-1.5">
+                      <div className="flex items-center gap-2 px-1">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: group.project.color }} />
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{group.project.name}</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-1 pl-4">
+                        {group.actions.map(action => (
+                          <label key={action.id} className="flex items-center gap-2 p-1.5 hover:bg-white rounded-md cursor-pointer transition-all group">
+                            <input 
+                              type="checkbox" 
+                              checked={(formData.dependencies || []).includes(action.id)}
+                              onChange={() => toggleDependency(action.id)}
+                              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm font-medium text-slate-700 truncate group-hover:text-blue-600">{action.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {groupedActions.length === 0 && (
+                    <p className="text-xs text-slate-400 italic p-2 text-center">Aucune action trouvée.</p>
+                  )}
+                </div>
               </div>
             </div>
           </div>
 
           {/* Comments Section */}
           <div className="pt-6 border-t border-slate-100">
-            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Comments & Logs</h3>
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Commentaires & Logs</h3>
             <div className="flex gap-2 mb-4">
               <input 
                 type="text" 
                 value={newComment}
                 onChange={e => setNewComment(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), handleAddComment())}
-                placeholder="Add a progress update..."
+                placeholder="Ajouter une mise à jour..."
                 className="flex-1 px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
               />
               <button 
@@ -2551,20 +3347,79 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
                 onClick={handleAddComment}
                 className="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-slate-800 transition-all active:scale-95"
               >
-                Post
+                Poster
               </button>
             </div>
             <div className="space-y-3">
               {comments.map(comment => (
-                <div key={comment.id} className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                  <p className="text-sm text-slate-700 leading-relaxed">{comment.text}</p>
-                  <p className="text-[10px] font-bold text-slate-400 mt-2 uppercase tracking-wider">
-                    {format(parseISO(comment.timestamp), 'MMM d, yyyy • HH:mm')}
-                  </p>
+                <div key={comment.id} className="group bg-slate-50 p-3 rounded-xl border border-slate-100 relative">
+                  {editingCommentId === comment.id ? (
+                    <div className="space-y-2">
+                      <textarea 
+                        value={editingCommentText}
+                        onChange={e => setEditingCommentText(e.target.value)}
+                        className="w-full p-2 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                        rows={2}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button 
+                          onClick={() => setEditingCommentId(null)}
+                          className="text-xs font-bold text-slate-500 px-2 py-1 hover:bg-slate-200 rounded"
+                        >
+                          Annuler
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (initialData && onUpdateComment) {
+                              onUpdateComment(initialData.id, comment.id, editingCommentText);
+                            }
+                            setComments(prev => prev.map(c => c.id === comment.id ? { ...c, text: editingCommentText } : c));
+                            setEditingCommentId(null);
+                          }}
+                          className="text-xs font-bold text-blue-600 px-2 py-1 hover:bg-blue-50 rounded"
+                        >
+                          Sauvegarder
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between items-start mb-1">
+                        <p className="text-sm text-slate-700 leading-relaxed pr-8">{comment.text}</p>
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              setEditingCommentId(comment.id);
+                              setEditingCommentText(comment.text);
+                            }}
+                            className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-blue-600"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              if (initialData && onDeleteComment) {
+                                onDeleteComment(initialData.id, comment.id);
+                              }
+                              setComments(prev => prev.filter(c => c.id !== comment.id));
+                            }}
+                            className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-rose-600"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-[10px] font-bold text-slate-400 mt-2 uppercase tracking-wider">
+                        {format(parseISO(comment.timestamp), 'MMM d, yyyy • HH:mm')}
+                      </p>
+                    </>
+                  )}
                 </div>
               ))}
               {comments.length === 0 && (
-                <p className="text-center text-slate-400 text-sm py-4 italic">No comments yet.</p>
+                <p className="text-center text-slate-400 text-sm py-4 italic">Aucun commentaire.</p>
               )}
             </div>
           </div>
@@ -2578,7 +3433,7 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
               className="flex items-center gap-2 text-rose-600 hover:text-rose-700 font-bold text-sm px-4 py-2 rounded-xl hover:bg-rose-50 transition-all"
             >
               <Trash2 className="w-4 h-4" />
-              Delete Action
+              Supprimer l'Action
             </button>
           ) : <div />}
           <div className="flex gap-3">
@@ -2587,13 +3442,13 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
               onClick={onClose}
               className="px-6 py-2.5 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all"
             >
-              Cancel
+              Annuler
             </button>
             <button 
               onClick={handleSubmit}
               className="px-8 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-500/20 active:scale-95"
             >
-              {initialData ? 'Save Changes' : 'Create Action'}
+              {initialData ? 'Sauvegarder' : 'Créer Action'}
             </button>
           </div>
         </div>
@@ -2614,34 +3469,47 @@ function ProjectModal({ project, onClose, onSave, onDelete }: {
     status: project?.status || 'Non commencé',
     startDate: project?.startDate || '',
     endDate: project?.endDate || '',
+    category: project?.category || '',
+    notes: project?.notes || '',
   });
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in duration-200 overflow-hidden">
         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-          <h2 className="text-xl font-bold text-slate-900">{project ? 'Edit Project' : 'New Project'}</h2>
+          <h2 className="text-xl font-bold text-slate-900">{project ? 'Modifier Projet' : 'Nouveau Projet'}</h2>
           <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-all">
             <X className="w-5 h-5 text-slate-400" />
           </button>
         </div>
         
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
           <div>
-            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Project Name</label>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Nom du Projet</label>
             <input 
               autoFocus
               type="text" 
               value={formData.name}
               onChange={e => setFormData({...formData, name: e.target.value})}
-              placeholder="Project name..."
+              placeholder="Nom du projet..."
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Catégorie</label>
+            <input 
+              type="text" 
+              value={formData.category}
+              onChange={e => setFormData({...formData, category: e.target.value})}
+              placeholder="ex: Marketing, Tech, Client..."
               className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Status</label>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Statut</label>
               <select 
                 value={formData.status}
                 onChange={e => setFormData({...formData, status: e.target.value as ProjectStatus})}
@@ -2654,11 +3522,12 @@ function ProjectModal({ project, onClose, onSave, onDelete }: {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Color</label>
-              <div className="flex flex-wrap gap-2">
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Couleur</label>
+              <div className="flex flex-wrap gap-2 mb-2">
                 {PROJECT_COLORS.map(c => (
                   <button 
                     key={c}
+                    type="button"
                     onClick={() => setFormData({...formData, color: c})}
                     className={cn(
                       "w-6 h-6 rounded-full border-2 transition-all",
@@ -2667,13 +3536,35 @@ function ProjectModal({ project, onClose, onSave, onDelete }: {
                     style={{ backgroundColor: c }}
                   />
                 ))}
+                <div className="flex items-center gap-2 w-full mt-2">
+                  <input 
+                    type="color" 
+                    value={formData.color}
+                    onChange={e => setFormData({...formData, color: e.target.value})}
+                    className="w-8 h-8 rounded-lg border border-slate-200 cursor-pointer p-0.5"
+                  />
+                  <input 
+                    type="text" 
+                    value={formData.color}
+                    onChange={e => setFormData({...formData, color: e.target.value})}
+                    placeholder="#hex"
+                    className="flex-1 px-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono uppercase focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
               </div>
+              <input 
+                type="text" 
+                value={formData.color}
+                onChange={e => setFormData({...formData, color: e.target.value})}
+                placeholder="#hex"
+                className="w-full px-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Start Date</label>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Début</label>
               <input 
                 type="date" 
                 value={formData.startDate}
@@ -2682,7 +3573,7 @@ function ProjectModal({ project, onClose, onSave, onDelete }: {
               />
             </div>
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">End Date</label>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Fin</label>
               <input 
                 type="date" 
                 value={formData.endDate}
@@ -2690,6 +3581,16 @@ function ProjectModal({ project, onClose, onSave, onDelete }: {
                 className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Description / Notes</label>
+            <textarea 
+              value={formData.notes}
+              onChange={e => setFormData({...formData, notes: e.target.value})}
+              placeholder="Notes sur le projet..."
+              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium min-h-[80px]"
+            />
           </div>
         </div>
 
