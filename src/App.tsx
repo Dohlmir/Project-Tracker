@@ -7,9 +7,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
+  Minus,
   Filter, 
   Calendar, 
   List as ListIcon, 
+  ListTodo,
   CheckCircle2, 
   Clock, 
   AlertCircle, 
@@ -32,7 +34,8 @@ import {
   Archive,
   Zap,
   Pin,
-  Edit2
+  Edit2,
+  Menu
 } from 'lucide-react';
 import { 
   format, 
@@ -49,6 +52,7 @@ import {
   formatDistanceToNow,
   isAfter
 } from 'date-fns';
+import { fr } from 'date-fns/locale';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { createClient } from '@supabase/supabase-js';
@@ -184,6 +188,7 @@ export default function App() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [view, setView] = useState<'list' | 'gantt' | 'history' | 'time' | 'archives' | 'projects' | 'todo'>('list');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [editingAction, setEditingAction] = useState<Action | null>(null);
   const [editingProject, setEditingProject] = useState<Project | 'new' | null>(null);
 
@@ -403,11 +408,14 @@ export default function App() {
         return dep && isAfter(dep.calculatedEndDate, action.calculatedStartDate);
       });
 
+      const daysRemaining = differenceInDays(action.calculatedEndDate, new Date());
+
       return {
         ...action,
         slack,
         isCritical: slack === 0,
-        hasOverlap
+        hasOverlap,
+        daysRemaining
       };
     });
   };
@@ -799,16 +807,32 @@ export default function App() {
       </div>
 
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
-        <div className="p-6 border-b border-slate-100">
-          <div className="flex items-center gap-2 mb-1">
-            <LayoutDashboard className="w-6 h-6 text-blue-600" />
-            <h1 className="text-xl font-bold tracking-tight text-slate-900">ActionPro</h1>
-          </div>
-          <p className="text-xs text-slate-400 font-medium uppercase tracking-wider">Project Manager</p>
-        </div>
+      <AnimatePresence>
+        {(isSidebarOpen || window.innerWidth >= 1024) && (
+          <motion.aside 
+            initial={{ x: -256 }}
+            animate={{ x: 0 }}
+            exit={{ x: -256 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            className={cn(
+              "fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 flex flex-col shrink-0 z-[60] lg:relative lg:translate-x-0",
+              !isSidebarOpen && "hidden lg:flex"
+            )}
+          >
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <LayoutDashboard className="w-6 h-6 text-blue-600" />
+                <h1 className="text-xl font-bold tracking-tight text-slate-900">ActionPro</h1>
+              </div>
+              <button 
+                onClick={() => setIsSidebarOpen(false)}
+                className="lg:hidden p-2 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
           <div>
             <div className="flex items-center justify-between mb-3 px-2">
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Projects</h2>
@@ -948,7 +972,22 @@ export default function App() {
             <p className="text-2xl font-bold text-slate-900">{actions.length}</p>
           </div>
         </div>
-      </aside>
+      </motion.aside>
+        )}
+      </AnimatePresence>
+
+      {/* Mobile Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
@@ -961,33 +1000,55 @@ export default function App() {
           </div>
         )}
         {/* Header */}
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shrink-0">
-          <div className="flex items-center gap-6">
-            <div className="flex bg-slate-100 p-1 rounded-lg">
+        <header className="h-auto lg:h-16 bg-white border-b border-slate-200 flex flex-col lg:flex-row items-center justify-between px-4 lg:px-8 py-3 lg:py-0 shrink-0 gap-4">
+          <div className="flex items-center justify-between w-full lg:w-auto">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="lg:hidden p-2 hover:bg-slate-100 rounded-xl transition-colors"
+            >
+              <Menu className="w-5 h-5 text-slate-600" />
+            </button>
+            <div className="lg:hidden flex items-center gap-2">
+              <LayoutDashboard className="w-5 h-5 text-blue-600" />
+              <span className="font-bold text-slate-900">ActionPro</span>
+            </div>
+            <button 
+              onClick={() => {
+                setEditingAction(null);
+                setIsModalOpen(true);
+              }}
+              className="lg:hidden flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded-xl transition-all shadow-sm active:scale-95"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="w-full lg:w-auto overflow-x-auto custom-scrollbar-hide">
+            <div className="flex bg-slate-100 p-1 rounded-xl min-w-max">
               <button 
                 onClick={() => setView('list')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'list' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
                 <ListIcon className="w-4 h-4" />
-                List View
+                List
               </button>
               <button 
                 onClick={() => setView('gantt')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'gantt' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
                 <Calendar className="w-4 h-4" />
-                Gantt View
+                Gantt
               </button>
               <button 
                 onClick={() => setView('history')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'history' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
@@ -997,7 +1058,7 @@ export default function App() {
               <button 
                 onClick={() => setView('time')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'time' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
@@ -1007,7 +1068,7 @@ export default function App() {
               <button 
                 onClick={() => setView('projects')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'projects' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
@@ -1017,7 +1078,7 @@ export default function App() {
               <button 
                 onClick={() => setView('todo')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'todo' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
@@ -1027,7 +1088,7 @@ export default function App() {
               <button 
                 onClick={() => setView('archives')}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs lg:text-sm font-bold uppercase tracking-wider transition-all",
                   view === 'archives' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
                 )}
               >
@@ -1042,7 +1103,7 @@ export default function App() {
               setEditingAction(null);
               setIsModalOpen(true);
             }}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm active:scale-95"
+            className="hidden lg:flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold uppercase tracking-wider transition-all shadow-lg shadow-blue-500/20 active:scale-95"
           >
             <Plus className="w-4 h-4" />
             New Action
@@ -1198,23 +1259,23 @@ function ProjectDashboardView({ projects, actions, projectComments, onSaveCommen
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-8 space-y-8">
+      <div className="flex-1 overflow-y-auto p-4 lg:p-8 space-y-8">
         {/* Stats Grid */}
-        <div className="grid grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 lg:grid-6">
           {[
             { label: 'À Faire', value: stats.todo, color: 'text-slate-600', bg: 'bg-slate-100' },
             { label: 'En Cours', value: stats.inProgress, color: 'text-blue-600', bg: 'bg-blue-50' },
             { label: 'Terminé', value: stats.done, color: 'text-emerald-600', bg: 'bg-emerald-50' },
             { label: 'Bloqué', value: stats.blocked, color: 'text-rose-600', bg: 'bg-rose-50' },
           ].map(stat => (
-            <div key={stat.label} className={cn("p-6 rounded-2xl border border-white shadow-sm", stat.bg)}>
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{stat.label}</p>
-              <p className={cn("text-3xl font-black", stat.color)}>{stat.value}</p>
+            <div key={stat.label} className={cn("p-4 lg:p-6 rounded-2xl border border-white shadow-sm", stat.bg)}>
+              <p className="text-[10px] lg:text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{stat.label}</p>
+              <p className={cn("text-xl lg:text-3xl font-black", stat.color)}>{stat.value}</p>
             </div>
           ))}
         </div>
 
-        <div className="grid grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Pinned Actions */}
           <div className="col-span-1 space-y-4">
             <div className="flex items-center gap-2 mb-2">
@@ -1296,6 +1357,70 @@ function ProjectDashboardView({ projects, actions, projectComments, onSaveCommen
             </div>
           </div>
         </div>
+
+        {/* All Project Actions Section */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 mb-2">
+            <ListTodo className="w-4 h-4 text-blue-600" />
+            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Toutes les Actions du Projet</h3>
+          </div>
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/50">
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Action</th>
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Statut</th>
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Échéance</th>
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Priorité</th>
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {projectActions.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="p-12 text-center text-slate-400 text-sm italic">
+                      Aucune action pour ce projet.
+                    </td>
+                  </tr>
+                ) : (
+                  projectActions.sort((a, b) => new Date(a.endDate || 0).getTime() - new Date(b.endDate || 0).getTime()).map(action => (
+                    <tr key={action.id} className="hover:bg-slate-50/50 transition-colors border-b border-slate-50 last:border-0 group">
+                      <td className="p-4">
+                        <div className="flex items-center gap-2">
+                          {action.isPinned && <Pin className="w-3 h-3 text-blue-600 fill-current" />}
+                          <span className="text-sm font-bold text-slate-700">{action.name}</span>
+                        </div>
+                      </td>
+                      <td className="p-4">
+                        <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider", STATUS_COLORS[action.status])}>
+                          {action.status}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className="text-xs text-slate-500">
+                          {action.endDate ? format(parseISO(action.endDate), 'dd MMM yyyy', { locale: fr }) : '-'}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className={cn("text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider", PRIORITY_COLORS[action.priority])}>
+                          {action.priority}
+                        </span>
+                      </td>
+                      <td className="p-4 text-right">
+                        <button 
+                          onClick={() => onEditAction(action)}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1365,33 +1490,30 @@ function TodoListView({ actions, projects, onUpdateAction, onAddTimeLog, timeLog
             const todayLog = todayLogs.find(l => l.actionId === action.id);
             
             return (
-              <div key={action.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all flex items-center gap-6">
-                <button 
-                  onClick={() => onUpdateAction({ ...action, status: action.status === 'Done' ? 'To Do' : 'Done' })}
-                  className={cn(
-                    "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
-                    action.status === 'Done' ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200 text-transparent hover:border-blue-500"
-                  )}
-                >
-                  <CheckSquare className="w-4 h-4" />
-                </button>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: project?.color }} />
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{project?.name}</span>
-                    {project?.category && (
-                      <span className="px-1 py-0.5 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase rounded border border-slate-100">
-                        {project.category}
-                      </span>
+              <div key={action.id} className="bg-white p-4 md:p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all flex flex-col md:flex-row items-start md:items-center gap-4 md:gap-6">
+                <div className="flex items-center gap-4 w-full md:w-auto">
+                  <button 
+                    onClick={() => onUpdateAction({ ...action, status: action.status === 'Done' ? 'To Do' : 'Done' })}
+                    className={cn(
+                      "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shrink-0",
+                      action.status === 'Done' ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-200 text-transparent hover:border-blue-500"
                     )}
+                  >
+                    <CheckSquare className="w-4 h-4" />
+                  </button>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: project?.color }} />
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{project?.name}</span>
+                    </div>
+                    <h3 className={cn("text-base font-bold text-slate-800 truncate", action.status === 'Done' && "line-through text-slate-400")}>
+                      {action.name}
+                    </h3>
                   </div>
-                  <h3 className={cn("text-base font-bold text-slate-800 truncate", action.status === 'Done' && "line-through text-slate-400")}>
-                    {action.name}
-                  </h3>
                 </div>
 
-                <div className="flex items-center gap-6 shrink-0">
+                <div className="flex items-center justify-between w-full md:w-auto gap-4 md:gap-6 shrink-0 border-t md:border-t-0 pt-4 md:pt-0">
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estimé (h)</label>
                     <input 
@@ -1458,6 +1580,7 @@ interface CalculatedAction extends Action {
   slack: number;
   isCritical: boolean;
   hasOverlap: boolean;
+  daysRemaining: number;
 }
 
 function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction }: {
@@ -1489,10 +1612,10 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
   }, [projectLogs, timeGrouping]);
 
   return (
-    <div className="h-full flex overflow-hidden bg-slate-50/50">
+    <div className="h-full flex flex-col md:flex-row overflow-hidden bg-slate-50/50">
       {/* Project List */}
-      <div className="w-80 border-r border-slate-200 bg-white flex flex-col shrink-0">
-        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+      <div className="w-full md:w-80 border-b md:border-b-0 md:border-r border-slate-200 bg-white flex flex-col shrink-0 max-h-[40vh] md:max-h-full">
+        <div className="p-4 md:p-6 border-b border-slate-100 flex items-center justify-between">
           <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
             <Archive className="w-5 h-5 text-slate-400" />
             Projets Archivés
@@ -1501,7 +1624,7 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
             {projects.length}
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
           {projects.length === 0 ? (
             <div className="text-center py-12 px-4">
               <Archive className="w-12 h-12 text-slate-200 mx-auto mb-3" />
@@ -1568,19 +1691,19 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
       </div>
 
       {/* Project Details */}
-      <div className="flex-1 overflow-y-auto p-8">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8">
         {selectedProject ? (
-          <div className="max-w-4xl mx-auto space-y-8">
-            <div className="flex items-center justify-between">
+          <div className="max-w-4xl mx-auto space-y-6 md:space-y-8">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
                 <div className="flex items-center gap-3 mb-1">
                   <div className="w-4 h-4 rounded-full" style={{ backgroundColor: selectedProject.color }} />
-                  <h2 className="text-3xl font-black text-slate-900 tracking-tight">{selectedProject.name}</h2>
+                  <h2 className="text-2xl md:text-3xl font-black text-slate-900 tracking-tight">{selectedProject.name}</h2>
                 </div>
                 <p className="text-slate-500 text-sm">Historique complet des actions et du temps passé.</p>
               </div>
               <div className="flex items-center gap-3">
-                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-xl">
+                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-xl flex-1 md:flex-none">
                   <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Total Temps</div>
                   <div className="text-xl font-black text-blue-600">{totalHours}h</div>
                 </div>
@@ -1593,8 +1716,8 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 space-y-8">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
+              <div className="lg:col-span-2 space-y-6 md:space-y-8">
                 <div className="space-y-4">
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Actions ({projectActions.length})</h3>
                   <div className="grid gap-3">
@@ -1606,7 +1729,7 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                       projectActions.map(action => (
                         <div 
                           key={action.id}
-                          className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group flex items-center justify-between"
+                          className="bg-white border border-slate-100 rounded-2xl p-4 md:p-5 shadow-sm hover:shadow-md transition-all group flex items-center justify-between"
                         >
                           <div className="flex items-center gap-4">
                             <div className={cn(
@@ -1615,9 +1738,9 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                             )}>
                               <CheckCircle2 className="w-5 h-5" />
                             </div>
-                            <div>
-                              <h4 className="font-bold text-slate-900 mb-1">{action.name}</h4>
-                              <div className="flex items-center gap-3 text-[10px] font-medium text-slate-400">
+                            <div className="min-w-0">
+                              <h4 className="font-bold text-slate-900 mb-1 truncate">{action.name}</h4>
+                              <div className="flex flex-wrap items-center gap-2 md:gap-3 text-[10px] font-medium text-slate-400">
                                 <span className={cn(
                                   "px-2 py-0.5 rounded-full border",
                                   STATUS_COLORS[action.status]
@@ -1639,7 +1762,7 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                           </div>
                           <button 
                             onClick={() => onEditAction(action)}
-                            className="p-2 opacity-0 group-hover:opacity-100 hover:bg-slate-50 rounded-xl transition-all"
+                            className="p-2 opacity-0 group-hover:opacity-100 hover:bg-slate-50 rounded-xl transition-all shrink-0"
                           >
                             <MoreVertical className="w-5 h-5 text-slate-400" />
                           </button>
@@ -1743,7 +1866,7 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
 }) {
   const [quickComments, setQuickComments] = useState<Record<string, string>>({});
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
-  const [sortField, setSortField] = useState<'name' | 'status' | 'date' | 'category'>('date');
+  const [sortField, setSortField] = useState<'name' | 'status' | 'date' | 'category' | 'daysRemaining'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   const sortedActions = useMemo(() => {
@@ -1762,11 +1885,14 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
         valA = a.status;
         valB = b.status;
       } else if (sortField === 'date') {
-        valA = a.startDate || '';
-        valB = b.startDate || '';
+        valA = a.calculatedEndDate.getTime();
+        valB = b.calculatedEndDate.getTime();
       } else if (sortField === 'category') {
         valA = (projectA?.category || '').toLowerCase();
         valB = (projectB?.category || '').toLowerCase();
+      } else if (sortField === 'daysRemaining') {
+        valA = a.daysRemaining;
+        valB = b.daysRemaining;
       }
 
       if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
@@ -1776,7 +1902,7 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
     return result;
   }, [actions, projects, sortField, sortOrder]);
 
-  const toggleSort = (field: 'name' | 'status' | 'date' | 'category') => {
+  const toggleSort = (field: 'name' | 'status' | 'date' | 'category' | 'daysRemaining') => {
     if (sortField === field) {
       setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
     } else {
@@ -1813,10 +1939,12 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
             <p className="text-slate-500 max-w-xs">Start by adding a new action or adjust your project filters.</p>
           </div>
         ) : (
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
-            <table className="w-full text-left border-collapse">
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm overflow-x-auto custom-scrollbar">
+            <table className="w-full text-left border-collapse min-w-[800px]">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
+                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
                   <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
                   <th 
                     className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600"
@@ -1841,6 +1969,12 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                     onClick={() => toggleSort('date')}
                   >
                     Date {sortField === 'date' && (sortOrder === 'asc' ? '↑' : '↓')}
+                  </th>
+                  <th 
+                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-24"
+                    onClick={() => toggleSort('daysRemaining')}
+                  >
+                    Jours {sortField === 'daysRemaining' && (sortOrder === 'asc' ? '↑' : '↓')}
                   </th>
                   <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-24">Alertes</th>
                   <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-20"></th>
@@ -1871,6 +2005,28 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                             className="w-1.5 h-6 rounded-full" 
                             style={{ backgroundColor: project?.color || '#cbd5e1' }} 
                           />
+                        </td>
+                        <td className="px-4 py-1.5">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); onUpdateAction({ ...action, isPinned: !action.isPinned }); }}
+                            className={cn(
+                              "p-1 rounded transition-colors",
+                              action.isPinned ? "text-blue-600 bg-blue-50" : "text-slate-300 hover:text-slate-400"
+                            )}
+                          >
+                            <Pin className={cn("w-3 h-3", action.isPinned && "fill-current")} />
+                          </button>
+                        </td>
+                        <td className="px-4 py-1.5">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); onUpdateAction({ ...action, isTodo: !action.isTodo }); }}
+                            className={cn(
+                              "p-1 rounded transition-colors",
+                              action.isTodo ? "text-amber-600 bg-amber-50" : "text-slate-300 hover:text-slate-400"
+                            )}
+                          >
+                            <CheckSquare className={cn("w-3 h-3", action.isTodo && "fill-current")} />
+                          </button>
                         </td>
                         <td className="px-4 py-1.5">
                           <div className="flex flex-col">
@@ -1923,9 +2079,19 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                           <div className="flex items-center gap-1 text-slate-400">
                             <Calendar className="w-3 h-3" />
                             <span className="text-[10px] font-medium">
-                              {format(action.calculatedStartDate, 'MMM d')}
+                              {format(action.calculatedEndDate, 'MMM d')}
                             </span>
                           </div>
+                        </td>
+                        <td className="px-4 py-1.5">
+                          <span className={cn(
+                            "text-[10px] font-bold",
+                            action.daysRemaining < 0 ? "text-rose-600" : 
+                            action.daysRemaining <= 3 ? "text-amber-600" : "text-slate-500"
+                          )}>
+                            {action.daysRemaining < 0 ? `Retard ${Math.abs(action.daysRemaining)}j` : 
+                             action.daysRemaining === 0 ? 'Auj.' : `${action.daysRemaining}j`}
+                          </span>
                         </td>
                         <td className="px-4 py-1.5">
                           <div className="flex items-center gap-2">
@@ -2048,6 +2214,7 @@ function TimeTrackingView({ projects, actions, timeLogs, onAddTimeLog, onDeleteT
   const [selectedActionId, setSelectedActionId] = useState<string>('');
   const [hours, setHours] = useState<string>('');
   const [date, setDate] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
   
   // Dashboard Filters
   const [startDate, setStartDate] = useState<string>(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
@@ -2060,6 +2227,10 @@ function TimeTrackingView({ projects, actions, timeLogs, onAddTimeLog, onDeleteT
     e.preventDefault();
     if (!selectedProjectId || !hours || !date) return;
     
+    if (editingLogId) {
+      onDeleteTimeLog(editingLogId);
+    }
+
     onAddTimeLog({
       projectId: selectedProjectId,
       actionId: selectedActionId || undefined,
@@ -2069,6 +2240,16 @@ function TimeTrackingView({ projects, actions, timeLogs, onAddTimeLog, onDeleteT
 
     setHours('');
     setSelectedActionId('');
+    setEditingLogId(null);
+  };
+
+  const startEdit = (log: TimeLog) => {
+    setEditingLogId(log.id);
+    setSelectedProjectId(log.projectId);
+    setSelectedActionId(log.actionId || '');
+    setHours(log.hours.toString());
+    setDate(log.date);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // Filtered logs for the dashboard
@@ -2361,8 +2542,21 @@ function TimeTrackingView({ projects, actions, timeLogs, onAddTimeLog, onDeleteT
                   type="submit"
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-lg text-sm transition-all shadow-sm active:scale-[0.98] mt-2"
                 >
-                  Enregistrer
+                  {editingLogId ? 'Mettre à jour' : 'Enregistrer'}
                 </button>
+                {editingLogId && (
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setEditingLogId(null);
+                      setHours('');
+                      setSelectedActionId('');
+                    }}
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-2.5 rounded-lg text-sm transition-all mt-2"
+                  >
+                    Annuler
+                  </button>
+                )}
               </form>
             </div>
 
@@ -2393,76 +2587,79 @@ function TimeTrackingView({ projects, actions, timeLogs, onAddTimeLog, onDeleteT
 
         {/* Summary Table */}
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-slate-100">
-            <h3 className="text-lg font-bold text-slate-900">Détail par Projet & Action</h3>
+          <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+            <h3 className="text-lg font-bold text-slate-900">Historique & Détail par Projet</h3>
+            <Clock className="w-5 h-5 text-slate-400" />
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full text-left border-collapse min-w-[800px]">
               <thead>
                 <tr className="bg-slate-50/50">
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Date</th>
                   <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Projet</th>
                   <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">Action</th>
                   <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 text-center">Heures</th>
-                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 text-right">% du Total</th>
+                  <th className="p-4 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleProjectIds.length === 0 || dashboardLogs.length === 0 ? (
+                {dashboardLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="p-12 text-center text-slate-400 text-sm italic">
-                      Aucune donnée à afficher pour cette sélection.
+                    <td colSpan={5} className="p-12 text-center text-slate-400 text-sm italic">
+                      Aucune donnée pour cette période.
                     </td>
                   </tr>
                 ) : (
-                  projects
-                    .filter(p => visibleProjectIds.includes(p.id))
-                    .map(project => {
-                      const projectLogs = dashboardLogs.filter(log => log.projectId === project.id);
-                      const projectTotal = projectLogs.reduce((sum, log) => sum + log.hours, 0);
-                      
-                      if (projectTotal === 0) return null;
-
-                      // Group by action
-                      const actionMap: Record<string, number> = {};
-                      projectLogs.forEach(log => {
-                        const key = log.actionId || 'no-action';
-                        actionMap[key] = (actionMap[key] || 0) + log.hours;
-                      });
-
-                      return Object.entries(actionMap).map(([actionId, hours], idx) => {
-                        const action = actions.find(a => a.id === actionId);
-                        return (
-                          <tr key={`${project.id}-${actionId}`} className="hover:bg-slate-50/50 transition-colors border-b border-slate-50 last:border-0">
-                            <td className="p-4">
-                              {idx === 0 && (
-                                <div className="flex items-center gap-2">
-                                  <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: project.color }} />
-                                  <span className="text-sm font-bold text-slate-700">{project.name}</span>
-                                </div>
-                              )}
-                            </td>
-                            <td className="p-4">
-                              <span className="text-xs text-slate-500">{action?.name || '-'}</span>
-                            </td>
-                            <td className="p-4 text-center">
-                              <span className="text-sm font-bold text-slate-900">{hours}h</span>
-                            </td>
-                            <td className="p-4 text-right">
-                              <span className="text-xs font-bold text-slate-400">
-                                {((hours / totalHours) * 100).toFixed(1)}%
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      });
+                  dashboardLogs
+                    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                    .map(log => {
+                      const project = projects.find(p => p.id === log.projectId);
+                      const action = actions.find(a => a.id === log.actionId);
+                      return (
+                        <tr key={log.id} className="hover:bg-slate-50/50 transition-colors border-b border-slate-50 group last:border-0">
+                          <td className="p-4">
+                            <span className="text-xs font-medium text-slate-600">
+                              {format(parseISO(log.date), 'dd/MM/yyyy')}
+                            </span>
+                          </td>
+                          <td className="p-4">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: project?.color }} />
+                              <span className="text-sm font-bold text-slate-700">{project?.name}</span>
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <span className="text-xs text-slate-500">{action?.name || '-'}</span>
+                          </td>
+                          <td className="p-4 text-center">
+                            <span className="text-sm font-bold text-blue-600">{log.hours}h</span>
+                          </td>
+                          <td className="p-4 text-right">
+                            <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button 
+                                onClick={() => startEdit(log)}
+                                className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                              </button>
+                              <button 
+                                onClick={() => onDeleteTimeLog(log.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
                     })
                 )}
               </tbody>
               <tfoot className="bg-slate-50/80">
                 <tr>
-                  <td colSpan={2} className="p-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Sélection</td>
+                  <td colSpan={3} className="p-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-right">Total Période</td>
                   <td className="p-4 text-center font-black text-blue-600 text-base">{totalHours}h</td>
-                  <td className="p-4 text-right font-black text-slate-900 text-base">100%</td>
+                  <td></td>
                 </tr>
               </tfoot>
             </table>
@@ -2480,6 +2677,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
   onUpdateAction: (a: Action) => void
 }) {
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [zoom, setZoom] = useState(40); // Width of one day in pixels
   const [dragging, setDragging] = useState<{ id: string, startX: number, originalStart: Date, currentDelta: number } | null>(null);
   const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>(projects.map(p => p.id));
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -2534,7 +2732,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
     const handleMouseMove = (e: MouseEvent) => {
       if (!dragging) return;
       const deltaX = e.clientX - dragging.startX;
-      const dayDelta = Math.round(deltaX / 40);
+      const dayDelta = Math.round(deltaX / zoom);
       setDragging(prev => prev ? { ...prev, currentDelta: dayDelta } : null);
     };
 
@@ -2584,7 +2782,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
 
   // Dependency Line Logic
   const renderDependencyLines = () => {
-    return flatSortedActions.map(action => {
+    return flatSortedActions.flatMap(action => {
       return action.dependencies.map((depId: string) => {
         const dep = flatSortedActions.find(a => a.id === depId);
         if (!dep) return null;
@@ -2597,22 +2795,37 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
         const depRowIdx = flatSortedActions.findIndex(a => a.id === depId);
         const actionRowIdx = flatSortedActions.findIndex(a => a.id === action.id);
 
-        const x1 = (startIdx + 1) * 40;
-        const y1 = depRowIdx * 56 + 28;
-        const x2 = endIdx * 40;
-        const y2 = actionRowIdx * 56 + 28;
+        const x1 = (startIdx + 1) * zoom;
+        const y1 = depRowIdx * 64 + 32; // Center of 64px row
+        const x2 = endIdx * zoom;
+        const y2 = actionRowIdx * 64 + 32; // Center of 64px row
+
+        const isCritical = action.isCritical && dep.isCritical;
+        const color = isCritical ? '#ef4444' : '#94a3b8';
+        const strokeWidth = isCritical ? 2.5 : 1.5;
+        const dashArray = '0'; // Solid lines as requested
+
+        // Orthogonal path: 90 degree angles
+        const turnX = x1 + 10;
+        const path = `M ${x1} ${y1} L ${turnX} ${y1} L ${turnX} ${y2} L ${x2} ${y2}`;
 
         return (
-          <g key={`${action.id}-${depId}`}>
-            <path 
-              d={`M ${x1} ${y1} L ${x1 + 10} ${y1} L ${x1 + 10} ${y2} L ${x2} ${y2}`}
+          <g key={`${action.id}-${depId}`} className="pointer-events-none">
+            <path
+              d={path}
               fill="none"
-              stroke={showCriticalOnly || (action.isCritical && dep.isCritical) ? "#ef4444" : "#cbd5e1"}
-              strokeWidth={showCriticalOnly || (action.isCritical && dep.isCritical) ? "2" : "1"}
-              strokeDasharray={showCriticalOnly || (action.isCritical && dep.isCritical) ? "" : "4 2"}
-              className="transition-all"
+              stroke={color}
+              strokeWidth={strokeWidth}
+              strokeDasharray={dashArray}
+              className="transition-all duration-300"
             />
-            <circle cx={x2} cy={y2} r="3" fill={showCriticalOnly || (action.isCritical && dep.isCritical) ? "#ef4444" : "#cbd5e1"} />
+            {/* Arrowhead */}
+            <path
+              d={`M ${x2-6} ${y2-4} L ${x2} ${y2} L ${x2-6} ${y2+4}`}
+              fill="none"
+              stroke={color}
+              strokeWidth={strokeWidth}
+            />
           </g>
         );
       });
@@ -2622,8 +2835,8 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Gantt Header */}
-      <div className="px-8 py-3 border-b border-slate-100 flex items-center justify-between shrink-0 bg-white z-30">
-        <div className="flex items-center gap-6">
+      <div className="px-4 md:px-8 py-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 shrink-0 bg-white z-30">
+        <div className="flex items-center justify-between md:justify-start gap-4 md:gap-6">
           <div className="flex items-center gap-4">
             <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">{format(currentDate, 'MMMM yyyy')}</h2>
             <div className="flex gap-1">
@@ -2635,8 +2848,30 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
               </button>
             </div>
           </div>
-          
-          <div className="flex items-center gap-3 border-l border-slate-200 pl-6 relative">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest md:hidden">
+            {filteredActions.length} actions
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-3 overflow-x-auto pb-2 md:pb-0 custom-scrollbar no-scrollbar relative">
+          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200 shrink-0">
+              <button 
+                onClick={() => setZoom(Math.max(20, zoom - 10))}
+                className="p-1.5 hover:bg-white hover:shadow-sm rounded-lg transition-all text-slate-600"
+                title="Zoom arrière"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-[10px] font-black text-slate-400 w-8 text-center">{Math.round((zoom / 40) * 100)}%</span>
+              <button 
+                onClick={() => setZoom(Math.min(120, zoom + 10))}
+                className="p-1.5 hover:bg-white hover:shadow-sm rounded-lg transition-all text-slate-600"
+                title="Zoom avant"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             <button 
               onClick={() => setShowCriticalOnly(!showCriticalOnly)}
               className={cn(
@@ -2662,6 +2897,39 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
               <Filter className="w-3.5 h-3.5" />
               Projets ({visibleProjectIds.length}/{projects.length})
               <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", isFilterOpen && "rotate-180")} />
+            </button>
+
+            <button 
+              onClick={() => {
+                let code = "gantt\n";
+                code += "    title Diagramme de Gantt\n";
+                code += "    dateFormat  YYYY-MM-DD\n";
+                code += "    axisFormat  %d/%m\n";
+                
+                groupedActions.forEach(group => {
+                  code += `    section ${group.project.name}\n`;
+                  group.actions.forEach(action => {
+                    const start = format(action.calculatedStartDate, 'yyyy-MM-dd');
+                    const end = format(action.calculatedEndDate, 'yyyy-MM-dd');
+                    const status = action.status === 'Done' ? 'done' : 
+                                   action.status === 'In Progress' ? 'active' : 
+                                   action.isCritical ? 'crit' : '';
+                    
+                    code += `    ${action.name} :${status}, ${action.id}, ${start}, ${end}\n`;
+                  });
+                });
+                
+                navigator.clipboard.writeText(code);
+                // Simple feedback
+                const btn = document.activeElement as HTMLButtonElement;
+                const originalText = btn.innerText;
+                btn.innerText = "Copié !";
+                setTimeout(() => { btn.innerText = originalText; }, 2000);
+              }}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:border-slate-300 transition-all text-xs font-bold uppercase tracking-wider"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Code Mermaid
             </button>
 
             {isFilterOpen && (
@@ -2714,7 +2982,6 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
               </div>
             )}
           </div>
-        </div>
         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
           {filteredActions.length} actions affichées
         </div>
@@ -2724,23 +2991,24 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
       <div className="flex-1 overflow-auto relative custom-scrollbar">
         <div className="min-w-max relative">
           {/* SVG Overlay for Connections */}
-          <svg className="absolute top-[49px] left-64 pointer-events-none z-0" style={{ width: days.length * 40, height: flatSortedActions.length * 56 }}>
+          <svg className="absolute top-[49px] left-64 pointer-events-none z-0" style={{ width: days.length * zoom, height: flatSortedActions.length * 64 }}>
             {renderDependencyLines()}
           </svg>
 
           {/* Days Header */}
-          <div className="flex border-b border-slate-100 sticky top-0 bg-white z-20">
-            <div className="w-64 shrink-0 border-r border-slate-100 p-4 font-bold text-xs text-slate-400 uppercase tracking-wider bg-white">
+          <div className="flex border-b border-slate-100 sticky top-0 bg-white z-30">
+            <div className="w-64 shrink-0 border-r border-slate-100 p-4 font-bold text-xs text-slate-400 uppercase tracking-wider bg-white sticky left-0 z-40">
               Actions
             </div>
             {days.map(day => (
               <div 
                 key={day.toISOString()} 
                 className={cn(
-                  "w-10 shrink-0 flex flex-col items-center justify-center py-2 border-r border-slate-50 text-[10px] font-bold",
+                  "shrink-0 flex flex-col items-center justify-center py-2 border-r border-slate-50 text-[10px] font-bold",
                   isSameDay(day, new Date()) ? "text-blue-600 bg-blue-50/50" : "text-slate-400",
                   (day.getDay() === 0 || day.getDay() === 6) && "bg-slate-50/50"
                 )}
+                style={{ width: zoom }}
               >
                 <span>{format(day, 'EEE').toUpperCase()}</span>
                 <span className="text-xs">{format(day, 'd')}</span>
@@ -2772,7 +3040,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                     groupIdx % 2 === 1 && "bg-slate-50/20"
                   )}>
                     <div 
-                      className="w-64 shrink-0 border-r border-slate-100 p-3 flex items-center gap-3 cursor-pointer relative bg-white group-hover:bg-blue-50/30"
+                      className="w-64 shrink-0 border-r border-slate-100 p-3 flex items-center gap-3 cursor-pointer relative bg-white group-hover:bg-blue-50/30 sticky left-0 z-20"
                       onClick={() => onEdit(action)}
                     >
                       <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: group.project.color }} />
@@ -2797,14 +3065,15 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                       </div>
                     </div>
                     
-                    <div className="flex relative h-14">
+                    <div className="flex relative h-16">
                       {days.map(day => (
                         <div 
                           key={day.toISOString()} 
                           className={cn(
-                            "w-10 shrink-0 border-r border-slate-50/50",
+                            "shrink-0 border-r border-slate-50/50",
                             (day.getDay() === 0 || day.getDay() === 6) && "bg-slate-50/30"
                           )} 
+                          style={{ width: zoom }}
                         />
                       ))}
                       
@@ -2814,36 +3083,43 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                           onMouseDown={(e) => handleMouseDown(e, action)}
                           title={`${action.priority} Priority. Marge: ${action.slack}j. ${isLate ? 'EN RETARD' : ''}`}
                           className={cn(
-                            "absolute top-1/2 -translate-y-1/2 h-8 rounded-lg shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md z-10 overflow-hidden select-none",
-                            useRed ? "border-rose-300 bg-rose-50/80" : "border-slate-200",
-                            action.isCritical && "ring-1 ring-rose-500 ring-offset-1",
+                            "absolute top-1/2 -translate-y-1/2 h-9 rounded-lg shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md z-10 overflow-hidden select-none",
+                            action.status === 'Done' ? "bg-emerald-50 border-emerald-200 text-emerald-700" :
+                            action.status === 'In Progress' ? "bg-blue-50 border-blue-200 text-blue-700" :
+                            isLate ? "bg-rose-50 border-rose-200 text-rose-700" :
+                            "bg-slate-50 border-slate-200 text-slate-700",
+                            action.isCritical && "ring-2 ring-rose-500 ring-offset-1",
                             dragging?.id === action.id && "ring-2 ring-blue-500 ring-offset-2 scale-[1.02] opacity-100 z-50 cursor-grabbing"
                           )}
                           style={{ 
-                            left: `${(visibleStartIdx + (dragging?.id === action.id ? dragging.currentDelta : 0)) * 40 + 4}px`, 
-                            width: `${visibleDuration * 40 - 8}px`,
-                            backgroundColor: useRed ? undefined : `${group.project.color}15`,
-                            borderColor: useRed ? undefined : `${group.project.color}40`,
+                            left: `${(visibleStartIdx + (dragging?.id === action.id ? dragging.currentDelta : 0)) * zoom + 4}px`, 
+                            width: `${visibleDuration * zoom - 8}px`,
                           }}
                           onClick={() => onEdit(action)}
                         >
                           {/* Color Strip */}
                           <div 
                             className="w-1.5 h-full shrink-0" 
-                            style={{ backgroundColor: useRed ? '#ef4444' : group.project.color }} 
+                            style={{ 
+                              backgroundColor: action.status === 'Done' ? '#10b981' :
+                                             action.status === 'In Progress' ? '#3b82f6' :
+                                             isLate ? '#f43f5e' : group.project.color 
+                            }} 
                           />
                           <div className="flex items-center justify-between w-full px-3 overflow-hidden">
                             <div className="flex flex-col min-w-0">
                               <span className={cn(
                                 "text-[11px] font-bold truncate whitespace-nowrap",
-                                useRed ? "text-rose-700" : "text-slate-700"
+                                action.status === 'Done' ? "text-emerald-900" :
+                                action.status === 'In Progress' ? "text-blue-900" :
+                                isLate ? "text-rose-900" : "text-slate-900"
                               )}>
                                 {action.name}
                               </span>
                               {action.endDate && action.status !== 'Done' && (
                                 <span className={cn(
                                   "text-[9px] font-black uppercase tracking-tighter",
-                                  useRed ? "text-rose-600/70" : "text-slate-500/70"
+                                  isLate ? "text-rose-600/70" : "text-slate-500/70"
                                 )}>
                                   {differenceInDays(parseISO(action.endDate), new Date()) > 0 
                                     ? `${differenceInDays(parseISO(action.endDate), new Date())}j restants`
@@ -2935,8 +3211,8 @@ function ActivityFeed({ actions, projects, onEditAction }: {
 
   return (
     <div className="h-full flex flex-col bg-white">
-      <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-        <div className="flex items-center gap-4">
+      <div className="p-4 md:p-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
+        <div className="flex flex-wrap items-center gap-3 md:gap-4">
           <div className="flex items-center gap-2">
             <Filter className="w-4 h-4 text-slate-400" />
             <select 
@@ -2950,7 +3226,7 @@ function ActivityFeed({ actions, projects, onEditAction }: {
               ))}
             </select>
           </div>
-          <div className="h-4 w-px bg-slate-200" />
+          <div className="hidden md:block h-4 w-px bg-slate-200" />
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Sort by:</span>
             <select 
@@ -2969,7 +3245,7 @@ function ActivityFeed({ actions, projects, onEditAction }: {
             </button>
           </div>
         </div>
-        <div className="text-sm text-slate-500 font-medium">
+        <div className="text-xs text-slate-500 font-medium">
           {filteredComments.length} updates found
         </div>
       </div>
