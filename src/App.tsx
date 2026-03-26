@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
@@ -35,7 +35,8 @@ import {
   Zap,
   Pin,
   Edit2,
-  Menu
+  Menu,
+  Settings
 } from 'lucide-react';
 import { 
   format, 
@@ -118,6 +119,7 @@ interface Action {
   priority: Priority;
   startDate?: string;
   endDate?: string;
+  actualEndDate?: string;
   duration?: number;
   dependencies: string[];
   comments: Comment[];
@@ -241,6 +243,7 @@ export default function App() {
           priority: a.priority,
           startDate: a.start_date,
           endDate: a.end_date,
+          actualEndDate: a.actual_end_date,
           duration: a.duration,
           dependencies: a.dependencies || [],
           comments: a.comments || [],
@@ -410,12 +413,33 @@ export default function App() {
 
       const daysRemaining = differenceInDays(action.calculatedEndDate, new Date());
 
+      let isLate = false;
+      let isEarly = false;
+      let delayDays = 0;
+
+      if (action.status === 'Done' && action.actualEndDate && action.endDate) {
+        const actual = parseISO(action.actualEndDate);
+        const planned = parseISO(action.endDate);
+        delayDays = differenceInDays(actual, planned);
+        isLate = delayDays > 0;
+        isEarly = delayDays < 0;
+      } else if (action.status !== 'Done' && action.endDate) {
+        const planned = parseISO(action.endDate);
+        if (isAfter(new Date(), planned)) {
+          isLate = true;
+          delayDays = differenceInDays(new Date(), planned);
+        }
+      }
+
       return {
         ...action,
         slack,
         isCritical: slack === 0,
         hasOverlap,
-        daysRemaining
+        daysRemaining,
+        isLate,
+        isEarly,
+        delayDays
       };
     });
   };
@@ -474,6 +498,12 @@ export default function App() {
       isPinned: action.isPinned || false,
       isTodo: action.isTodo || false
     };
+
+    // Auto-set actualEndDate if status is Done and it's missing
+    if (newAction.status === 'Done' && !newAction.actualEndDate) {
+      newAction.actualEndDate = format(new Date(), 'yyyy-MM-dd');
+    }
+
     const updatedActions = [...actions, newAction];
     setActions(updatedActions);
     setIsModalOpen(false);
@@ -490,6 +520,7 @@ export default function App() {
           priority: newAction.priority,
           start_date: newAction.startDate || null,
           end_date: newAction.endDate || null,
+          actual_end_date: newAction.actualEndDate || null,
           duration: newAction.duration,
           dependencies: newAction.dependencies,
           comments: newAction.comments,
@@ -509,7 +540,18 @@ export default function App() {
   };
 
   const handleUpdateAction = async (updatedAction: Action) => {
-    const updatedActions = actions.map(a => a.id === updatedAction.id ? updatedAction : a);
+    // Auto-set actualEndDate if status is Done and it's missing
+    const finalAction = { ...updatedAction };
+    if (finalAction.status === 'Done' && !finalAction.actualEndDate) {
+      finalAction.actualEndDate = format(new Date(), 'yyyy-MM-dd');
+    } else if (finalAction.status !== 'Done') {
+      // Clear actualEndDate if moved back from Done? 
+      // Maybe not, user might want to keep it. 
+      // But usually if it's not Done, it shouldn't have an actual end date.
+      // Let's keep it for now as per user request "séparer date de fin et date de fin réelle"
+    }
+
+    const updatedActions = actions.map(a => a.id === finalAction.id ? finalAction : a);
     setActions(updatedActions);
     setIsModalOpen(false);
     setEditingAction(null);
@@ -519,18 +561,19 @@ export default function App() {
       const { error } = await supabase
         .from('actions')
         .upsert([{
-          id: updatedAction.id,
-          project_id: updatedAction.projectId,
-          name: updatedAction.name,
-          status: updatedAction.status,
-          priority: updatedAction.priority,
-          start_date: updatedAction.startDate || null,
-          end_date: updatedAction.endDate || null,
-          duration: updatedAction.duration,
-          dependencies: updatedAction.dependencies,
-          comments: updatedAction.comments,
-          is_pinned: updatedAction.isPinned || false,
-          is_todo: updatedAction.isTodo || false
+          id: finalAction.id,
+          project_id: finalAction.projectId,
+          name: finalAction.name,
+          status: finalAction.status,
+          priority: finalAction.priority,
+          start_date: finalAction.startDate || null,
+          end_date: finalAction.endDate || null,
+          actual_end_date: finalAction.actualEndDate || null,
+          duration: finalAction.duration,
+          dependencies: finalAction.dependencies,
+          comments: finalAction.comments,
+          is_pinned: finalAction.isPinned || false,
+          is_todo: finalAction.isTodo || false
         }]);
       if (error) {
         console.error('Supabase action upsert error:', error);
@@ -1581,6 +1624,9 @@ interface CalculatedAction extends Action {
   isCritical: boolean;
   hasOverlap: boolean;
   daysRemaining: number;
+  isLate?: boolean;
+  isEarly?: boolean;
+  delayDays?: number;
 }
 
 function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction }: {
@@ -1691,92 +1737,146 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
       </div>
 
       {/* Project Details */}
-      <div className="flex-1 overflow-y-auto p-4 md:p-8">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
         {selectedProject ? (
-          <div className="max-w-4xl mx-auto space-y-6 md:space-y-8">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="max-w-5xl mx-auto space-y-8">
+            {/* Header */}
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-slate-200 pb-8">
               <div>
-                <div className="flex items-center gap-3 mb-1">
-                  <div className="w-4 h-4 rounded-full" style={{ backgroundColor: selectedProject.color }} />
-                  <h2 className="text-2xl md:text-3xl font-black text-slate-900 tracking-tight">{selectedProject.name}</h2>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-4 h-4 rounded-full shadow-sm" style={{ backgroundColor: selectedProject.color }} />
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Projet Archivé</span>
                 </div>
-                <p className="text-slate-500 text-sm">Historique complet des actions et du temps passé.</p>
+                <h2 className="text-3xl md:text-4xl font-black text-slate-900 tracking-tight mb-2">{selectedProject.name}</h2>
+                <div className="flex flex-wrap items-center gap-4 text-sm text-slate-500 font-medium">
+                  {selectedProject.category && (
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold border border-slate-200">
+                      {selectedProject.category}
+                    </span>
+                  )}
+                  {selectedProject.endDate && (
+                    <span className="flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-slate-400" />
+                      Clôturé le {format(new Date(selectedProject.endDate), 'dd MMMM yyyy', { locale: fr })}
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <div className="bg-blue-50 border border-blue-100 px-4 py-2 rounded-xl flex-1 md:flex-none">
-                  <div className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Total Temps</div>
-                  <div className="text-xl font-black text-blue-600">{totalHours}h</div>
+              <button 
+                onClick={() => onEditProject(selectedProject)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm active:scale-95"
+              >
+                <Settings className="w-4 h-4" />
+                Paramètres du projet
+              </button>
+            </div>
+
+            {/* Stats Bento Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Temps Total</div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-black text-blue-600">{totalHours}</span>
+                  <span className="text-sm font-bold text-blue-400">heures</span>
                 </div>
-                <button 
-                  onClick={() => onEditProject(selectedProject)}
-                  className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 transition-all shadow-sm h-fit"
-                >
-                  Gérer le projet
-                </button>
+              </div>
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Actions</div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-black text-slate-900">{projectActions.filter(a => a.status === 'Done').length}</span>
+                  <span className="text-sm font-bold text-slate-400">/ {projectActions.length} terminées</span>
+                </div>
+              </div>
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Moyenne / Action</div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-3xl font-black text-slate-900">
+                    {projectActions.length > 0 ? (totalHours / projectActions.length).toFixed(1) : 0}
+                  </span>
+                  <span className="text-sm font-bold text-slate-400">h / action</span>
+                </div>
+              </div>
+              <div className="bg-slate-900 p-5 rounded-2xl shadow-lg shadow-slate-200 flex flex-col justify-center">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Progression</div>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-blue-500" 
+                      style={{ width: `${projectActions.length > 0 ? (projectActions.filter(a => a.status === 'Done').length / projectActions.length) * 100 : 0}%` }} 
+                    />
+                  </div>
+                  <span className="text-sm font-black text-white">
+                    {projectActions.length > 0 ? Math.round((projectActions.filter(a => a.status === 'Done').length / projectActions.length) * 100) : 0}%
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
-              <div className="lg:col-span-2 space-y-6 md:space-y-8">
-                <div className="space-y-4">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Actions ({projectActions.length})</h3>
-                  <div className="grid gap-3">
-                    {projectActions.length === 0 ? (
-                      <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center">
-                        <p className="text-slate-400 italic text-sm">Aucune action enregistrée pour ce projet.</p>
-                      </div>
-                    ) : (
-                      projectActions.map(action => (
-                        <div 
-                          key={action.id}
-                          className="bg-white border border-slate-100 rounded-2xl p-4 md:p-5 shadow-sm hover:shadow-md transition-all group flex items-center justify-between"
-                        >
-                          <div className="flex items-center gap-4">
-                            <div className={cn(
-                              "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
-                              action.status === 'Done' ? "bg-emerald-50 text-emerald-600" : "bg-slate-50 text-slate-400"
-                            )}>
-                              <CheckCircle2 className="w-5 h-5" />
-                            </div>
-                            <div className="min-w-0">
-                              <h4 className="font-bold text-slate-900 mb-1 truncate">{action.name}</h4>
-                              <div className="flex flex-wrap items-center gap-2 md:gap-3 text-[10px] font-medium text-slate-400">
-                                <span className={cn(
-                                  "px-2 py-0.5 rounded-full border",
-                                  STATUS_COLORS[action.status]
-                                )}>
-                                  {action.status}
-                                </span>
-                                <div className="flex items-center gap-1">
-                                  <Calendar className="w-3 h-3" />
-                                  {action.startDate ? format(new Date(action.startDate), 'dd/MM/yy') : 'Sans date'}
-                                </div>
-                                {action.comments.length > 0 && (
-                                  <div className="flex items-center gap-1">
-                                    <MessageSquare className="w-3 h-3" />
-                                    {action.comments.length}
-                                  </div>
-                                )}
+            {/* Main Content Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              {/* Actions List */}
+              <div className="lg:col-span-2 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Détail des Actions</h3>
+                </div>
+                <div className="space-y-3">
+                  {projectActions.length === 0 ? (
+                    <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center">
+                      <Archive className="w-12 h-12 text-slate-100 mx-auto mb-4" />
+                      <p className="text-slate-400 italic text-sm">Aucune action enregistrée pour ce projet.</p>
+                    </div>
+                  ) : (
+                    projectActions.map(action => (
+                      <div 
+                        key={action.id}
+                        className="bg-white border border-slate-100 rounded-2xl p-4 md:p-5 shadow-sm hover:shadow-md hover:border-blue-100 transition-all group flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className={cn(
+                            "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border",
+                            action.status === 'Done' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-slate-50 text-slate-400 border-slate-100"
+                          )}>
+                            {action.status === 'Done' ? <CheckCircle2 className="w-5 h-5" /> : <Clock className="w-5 h-5" />}
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className="font-bold text-slate-900 mb-1 truncate">{action.name}</h4>
+                            <div className="flex flex-wrap items-center gap-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                              <span className={cn(
+                                "px-2 py-0.5 rounded-md border",
+                                STATUS_COLORS[action.status]
+                              )}>
+                                {action.status}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <Calendar className="w-3.5 h-3.5" />
+                                {action.startDate ? format(new Date(action.startDate), 'dd/MM/yy') : 'Sans date'}
                               </div>
+                              {action.comments.length > 0 && (
+                                <div className="flex items-center gap-1 text-blue-500">
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                  {action.comments.length}
+                                </div>
+                              )}
                             </div>
                           </div>
-                          <button 
-                            onClick={() => onEditAction(action)}
-                            className="p-2 opacity-0 group-hover:opacity-100 hover:bg-slate-50 rounded-xl transition-all shrink-0"
-                          >
-                            <MoreVertical className="w-5 h-5 text-slate-400" />
-                          </button>
                         </div>
-                      ))
-                    )}
-                  </div>
+                        <button 
+                          onClick={() => onEditAction(action)}
+                          className="p-2 opacity-0 group-hover:opacity-100 hover:bg-slate-100 rounded-xl transition-all shrink-0"
+                        >
+                          <MoreVertical className="w-5 h-5 text-slate-400" />
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
+              {/* Time Logs Sidebar */}
               <div className="space-y-6">
                 <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Temps Passé</h3>
+                    <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Répartition Temps</h3>
                     <div className="flex bg-slate-100 p-0.5 rounded-lg">
                       <button 
                         onClick={() => setTimeGrouping('week')}
@@ -1799,41 +1899,47 @@ function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction
                     </div>
                   </div>
 
-                  <div className="space-y-4">
+                  <div className="space-y-5">
                     {groupedTime.length === 0 ? (
-                      <p className="text-center text-xs text-slate-400 italic py-4">Aucun temps enregistré.</p>
+                      <div className="text-center py-8">
+                        <Clock className="w-10 h-10 text-slate-100 mx-auto mb-2" />
+                        <p className="text-xs text-slate-400 italic">Aucun temps enregistré.</p>
+                      </div>
                     ) : (
                       groupedTime.map(([label, hours]) => (
-                        <div key={label} className="flex items-center justify-between group">
-                          <div className="flex flex-col">
-                            <span className="text-xs font-bold text-slate-700">{label}</span>
-                            <div className="w-32 h-1.5 bg-slate-100 rounded-full mt-1 overflow-hidden">
-                              <motion.div 
-                                initial={{ width: 0 }}
-                                animate={{ width: `${Math.min((hours / totalHours) * 100, 100)}%` }}
-                                className="h-full bg-blue-500"
-                              />
-                            </div>
+                        <div key={label} className="space-y-2 group">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">{label}</span>
+                            <span className="text-sm font-black text-slate-900">{hours}h</span>
                           </div>
-                          <span className="text-sm font-black text-slate-900">{hours}h</span>
+                          <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <motion.div 
+                              initial={{ width: 0 }}
+                              animate={{ width: `${Math.min((hours / totalHours) * 100, 100)}%` }}
+                              className="h-full bg-blue-500 rounded-full"
+                            />
+                          </div>
                         </div>
                       ))
                     )}
                   </div>
                 </div>
 
-                <div className="bg-slate-900 rounded-2xl p-6 text-white shadow-xl shadow-slate-200">
-                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Récapitulatif</h4>
-                  <div className="space-y-3">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-400">Actions finies</span>
-                      <span className="font-bold">{projectActions.filter(a => a.status === 'Done').length}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-slate-400">Moyenne / Action</span>
-                      <span className="font-bold">
-                        {projectActions.length > 0 ? (totalHours / projectActions.length).toFixed(1) : 0}h
-                      </span>
+                <div className="p-6 bg-blue-600 rounded-2xl text-white shadow-xl shadow-blue-100 relative overflow-hidden">
+                  <Zap className="absolute -right-4 -bottom-4 w-24 h-24 text-blue-500 opacity-20 rotate-12" />
+                  <div className="relative z-10">
+                    <h4 className="text-[10px] font-black text-blue-200 uppercase tracking-widest mb-4">Analyse Rapide</h4>
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-end">
+                        <span className="text-xs text-blue-100 font-medium">Efficacité</span>
+                        <span className="text-xl font-black">Haute</span>
+                      </div>
+                      <div className="h-1 bg-blue-500 rounded-full overflow-hidden">
+                        <div className="h-full bg-white w-3/4" />
+                      </div>
+                      <p className="text-[10px] text-blue-100 leading-relaxed font-medium">
+                        Ce projet a été complété avec une moyenne de {(totalHours / (projectActions.length || 1)).toFixed(1)}h par action.
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1868,6 +1974,21 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
   const [sortField, setSortField] = useState<'name' | 'status' | 'date' | 'category' | 'daysRemaining'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  const topScrollRef = useRef<HTMLDivElement>(null);
+  const bottomScrollRef = useRef<HTMLDivElement>(null);
+
+  const handleTopScroll = () => {
+    if (topScrollRef.current && bottomScrollRef.current) {
+      bottomScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+    }
+  };
+
+  const handleBottomScroll = () => {
+    if (topScrollRef.current && bottomScrollRef.current) {
+      topScrollRef.current.scrollLeft = bottomScrollRef.current.scrollLeft;
+    }
+  };
 
   const sortedActions = useMemo(() => {
     const result = [...actions];
@@ -1939,47 +2060,61 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
             <p className="text-slate-500 max-w-xs">Start by adding a new action or adjust your project filters.</p>
           </div>
         ) : (
-          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm overflow-x-auto custom-scrollbar">
-            <table className="w-full text-left border-collapse min-w-[800px]">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-1"></th>
-                  <th 
-                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600"
-                    onClick={() => toggleSort('name')}
-                  >
-                    Action {sortField === 'name' && (sortOrder === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th 
-                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-32"
-                    onClick={() => toggleSort('status')}
-                  >
-                    Status {sortField === 'status' && (sortOrder === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th 
-                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-32"
-                    onClick={() => toggleSort('category')}
-                  >
-                    Catégorie {sortField === 'category' && (sortOrder === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th 
-                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-24"
-                    onClick={() => toggleSort('date')}
-                  >
-                    Date {sortField === 'date' && (sortOrder === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th 
-                    className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-24"
-                    onClick={() => toggleSort('daysRemaining')}
-                  >
-                    Jours {sortField === 'daysRemaining' && (sortOrder === 'asc' ? '↑' : '↓')}
-                  </th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-24">Alertes</th>
-                  <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-20"></th>
-                </tr>
-              </thead>
+          <div className="space-y-1">
+            {/* Top Scrollbar */}
+            <div 
+              ref={topScrollRef}
+              onScroll={handleTopScroll}
+              className="overflow-x-auto custom-scrollbar h-2 mx-1"
+            >
+              <div className="min-w-[1000px] h-px" />
+            </div>
+
+            <div 
+              ref={bottomScrollRef}
+              onScroll={handleBottomScroll}
+              className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-x-auto custom-scrollbar"
+            >
+              <table className="w-full text-left border-collapse min-w-[1000px]">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-2 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-8"></th>
+                    <th className="px-1 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-8 text-center"></th>
+                    <th className="px-1 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-8 text-center"></th>
+                    <th 
+                      className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 min-w-[250px]"
+                      onClick={() => toggleSort('name')}
+                    >
+                      Action {sortField === 'name' && (sortOrder === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-32 whitespace-nowrap"
+                      onClick={() => toggleSort('status')}
+                    >
+                      Status {sortField === 'status' && (sortOrder === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-32 whitespace-nowrap"
+                      onClick={() => toggleSort('category')}
+                    >
+                      Catégorie {sortField === 'category' && (sortOrder === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-24 whitespace-nowrap"
+                      onClick={() => toggleSort('date')}
+                    >
+                      Date {sortField === 'date' && (sortOrder === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-600 w-24 whitespace-nowrap"
+                      onClick={() => toggleSort('daysRemaining')}
+                    >
+                      Jours {sortField === 'daysRemaining' && (sortOrder === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-16 whitespace-nowrap">Alertes</th>
+                    <th className="px-4 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider w-20"></th>
+                  </tr>
+                </thead>
               <tbody>
                 {sortedActions.map(action => {
                   const project = projects.find(p => p.id === action.projectId);
@@ -2000,28 +2135,28 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                         )}
                         onClick={() => setExpandedActionId(isExpanded ? null : action.id)}
                       >
-                        <td className="px-4 py-1.5">
+                        <td className="px-2 py-1.5 w-8">
                           <div 
                             className="w-1.5 h-6 rounded-full" 
                             style={{ backgroundColor: project?.color || '#cbd5e1' }} 
                           />
                         </td>
-                        <td className="px-4 py-1.5">
+                        <td className="px-1 py-1.5 w-8 text-center">
                           <button 
                             onClick={(e) => { e.stopPropagation(); onUpdateAction({ ...action, isPinned: !action.isPinned }); }}
                             className={cn(
-                              "p-1 rounded transition-colors",
+                              "p-1 rounded transition-colors inline-flex",
                               action.isPinned ? "text-blue-600 bg-blue-50" : "text-slate-300 hover:text-slate-400"
                             )}
                           >
                             <Pin className={cn("w-3 h-3", action.isPinned && "fill-current")} />
                           </button>
                         </td>
-                        <td className="px-4 py-1.5">
+                        <td className="px-1 py-1.5 w-8 text-center">
                           <button 
                             onClick={(e) => { e.stopPropagation(); onUpdateAction({ ...action, isTodo: !action.isTodo }); }}
                             className={cn(
-                              "p-1 rounded transition-colors",
+                              "p-1 rounded transition-colors inline-flex",
                               action.isTodo ? "text-amber-600 bg-amber-50" : "text-slate-300 hover:text-slate-400"
                             )}
                           >
@@ -2056,7 +2191,7 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-1.5">
+                        <td className="px-4 py-1.5 whitespace-nowrap">
                           <div className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border",
                             STATUS_COLORS[action.status]
@@ -2066,7 +2201,7 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                             {action.status}
                           </div>
                         </td>
-                        <td className="px-4 py-1.5">
+                        <td className="px-4 py-1.5 whitespace-nowrap">
                           {project?.category ? (
                             <span className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[9px] font-bold uppercase rounded tracking-wider border border-slate-200">
                               {project.category}
@@ -2075,23 +2210,32 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
                             <span className="text-[9px] text-slate-300 italic">Aucune</span>
                           )}
                         </td>
-                        <td className="px-4 py-1.5">
-                          <div className="flex items-center gap-1 text-slate-400">
-                            <Calendar className="w-3 h-3" />
-                            <span className="text-[10px] font-medium">
-                              {format(action.calculatedEndDate, 'MMM d')}
-                            </span>
+                        <td className="px-4 py-1.5 whitespace-nowrap">
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-1 text-slate-400">
+                              <Calendar className="w-3 h-3" />
+                              <span className="text-[10px] font-medium">
+                                {format(action.calculatedEndDate, 'MMM d')}
+                              </span>
+                            </div>
                           </div>
                         </td>
-                        <td className="px-4 py-1.5">
-                          <span className={cn(
-                            "text-[10px] font-bold",
-                            action.daysRemaining < 0 ? "text-rose-600" : 
-                            action.daysRemaining <= 3 ? "text-amber-600" : "text-slate-500"
-                          )}>
-                            {action.daysRemaining < 0 ? `Retard ${Math.abs(action.daysRemaining)}j` : 
-                             action.daysRemaining === 0 ? 'Auj.' : `${action.daysRemaining}j`}
-                          </span>
+                        <td className="px-4 py-1.5 whitespace-nowrap">
+                          <div className="flex flex-col">
+                            <span className={cn(
+                              "text-[10px] font-bold",
+                              action.daysRemaining < 0 || action.isLate ? "text-rose-600" : 
+                              action.daysRemaining <= 3 ? "text-amber-600" : "text-slate-500"
+                            )}>
+                              {action.status === 'Done' ? (
+                                action.isLate ? `Retard ${action.delayDays}j` : 
+                                action.isEarly ? `Avance ${Math.abs(action.delayDays || 0)}j` : 'À l\'heure'
+                              ) : (
+                                action.daysRemaining < 0 ? `Retard ${Math.abs(action.daysRemaining)}j` : 
+                                action.daysRemaining === 0 ? 'Auj.' : `${action.daysRemaining}j`
+                              )}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-1.5">
                           <div className="flex items-center gap-2">
@@ -2197,7 +2341,8 @@ function ListView({ actions, projects, onEdit, onDelete, onAddComment, onUpdateA
               </tbody>
             </table>
           </div>
-        )}
+        </div>
+      )}
       </div>
     </div>
   );
@@ -3030,7 +3175,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                 const visibleEndIdx = endIdx === -1 ? days.length - 1 : endIdx;
                 const visibleDuration = visibleEndIdx - visibleStartIdx + 1;
 
-                const isLate = action.status !== 'Done' && action.endDate && parseISO(action.endDate) < new Date();
+                const isLate = action.isLate;
                 const isHighPriority = action.priority === 'High';
                 const useRed = isHighPriority || isLate;
                 
@@ -3081,7 +3226,7 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                       {(startIdx !== -1 || endIdx !== -1) && (
                         <div 
                           onMouseDown={(e) => handleMouseDown(e, action)}
-                          title={`${action.priority} Priority. Marge: ${action.slack}j. ${isLate ? 'EN RETARD' : ''}`}
+                          title={`${action.priority} Priority. Marge: ${action.slack}j. ${isLate ? 'EN RETARD' : ''}${action.actualEndDate ? ` - Fini le ${format(parseISO(action.actualEndDate), 'dd/MM/yyyy')}` : ''}`}
                           className={cn(
                             "absolute top-1/2 -translate-y-1/2 h-9 rounded-lg shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md z-10 overflow-hidden select-none",
                             action.status === 'Done' ? "bg-emerald-50 border-emerald-200 text-emerald-700" :
@@ -3116,7 +3261,15 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                               )}>
                                 {action.name}
                               </span>
-                              {action.endDate && action.status !== 'Done' && (
+                              {action.status === 'Done' ? (
+                                <span className={cn(
+                                  "text-[9px] font-black uppercase tracking-tighter",
+                                  action.isLate ? "text-rose-600/70" : action.isEarly ? "text-emerald-600/70" : "text-slate-500/70"
+                                )}>
+                                  {action.isLate ? `Retard ${action.delayDays}j` : 
+                                   action.isEarly ? `Avance ${Math.abs(action.delayDays || 0)}j` : 'À l\'heure'}
+                                </span>
+                              ) : action.endDate && (
                                 <span className={cn(
                                   "text-[9px] font-black uppercase tracking-tighter",
                                   isLate ? "text-rose-600/70" : "text-slate-500/70"
@@ -3327,6 +3480,7 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
     priority: initialData?.priority || 'Medium',
     startDate: initialData?.startDate || '',
     endDate: initialData?.endDate || '',
+    actualEndDate: initialData?.actualEndDate || '',
     duration: initialData?.duration || 7,
     dependencies: initialData?.dependencies || [] as string[],
     isPinned: initialData?.isPinned || false,
@@ -3383,6 +3537,14 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
 
   const [newComment, setNewComment] = useState('');
   const [comments, setComments] = useState<Comment[]>(initialData?.comments || []);
+  const [prevStatus, setPrevStatus] = useState(formData.status);
+
+  useEffect(() => {
+    if (formData.status === 'Done' && prevStatus !== 'Done' && !formData.actualEndDate) {
+      setFormData(prev => ({ ...prev, actualEndDate: format(new Date(), 'yyyy-MM-dd') }));
+    }
+    setPrevStatus(formData.status);
+  }, [formData.status, prevStatus, formData.actualEndDate]);
 
   const handleAddComment = () => {
     if (!newComment.trim()) return;
@@ -3516,20 +3678,34 @@ function ActionModal({ isOpen, onClose, onSave, onDelete, projects, initialData,
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Statut</label>
-                <select 
-                  value={formData.status}
-                  onChange={e => setFormData({...formData, status: e.target.value as Status})}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
-                >
-                  <option value="To Do">To Do</option>
-                  <option value="In Progress">En cours</option>
-                  <option value="Blocked">Bloqué</option>
-                  <option value="Done">Terminé</option>
-                </select>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Statut</label>
+                  <select 
+                    value={formData.status}
+                    onChange={e => setFormData({...formData, status: e.target.value as Status})}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+                  >
+                    <option value="To Do">To Do</option>
+                    <option value="In Progress">En cours</option>
+                    <option value="Blocked">Bloqué</option>
+                    <option value="Done">Terminé</option>
+                  </select>
+                </div>
+                {formData.status === 'Done' && (
+                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Fin Réelle</label>
+                    <input 
+                      type="date" 
+                      value={formData.actualEndDate}
+                      onChange={e => setFormData({...formData, actualEndDate: e.target.value})}
+                      className="w-full px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium text-emerald-900"
+                    />
+                  </motion.div>
+                )}
               </div>
+
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Début</label>
