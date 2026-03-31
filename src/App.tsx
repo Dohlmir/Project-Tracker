@@ -127,6 +127,18 @@ interface Action {
   isTodo?: boolean;
 }
 
+interface CalculatedAction extends Action {
+  calculatedStartDate: Date;
+  calculatedEndDate: Date;
+  slack: number;
+  isCritical: boolean;
+  hasOverlap: boolean;
+  daysRemaining: number;
+  isLate: boolean;
+  isEarly: boolean;
+  delayDays: number;
+}
+
 interface Project {
   id: string;
   name: string;
@@ -173,6 +185,133 @@ const PROJECT_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#14b8a6',
   '#f97316', '#84cc16', '#6366f1', '#d946ef', '#f43f5e', '#1e293b', '#475569', '#7c3aed'
 ];
+
+// --- Helper Functions ---
+
+const calculateCriticalPath = (actionsList: Action[]): CalculatedAction[] => {
+  if (actionsList.length === 0) return [];
+
+  const actionMap = new Map<string, Action>(actionsList.map(a => [a.id, a]));
+  const forwardMemo = new Map<string, { start: Date, end: Date }>();
+
+  const calculateForward = (id: string, visited = new Set<string>()): { start: Date, end: Date } => {
+    if (forwardMemo.has(id)) return forwardMemo.get(id)!;
+    if (visited.has(id)) return { start: new Date(), end: new Date() }; 
+    visited.add(id);
+
+    const action = actionMap.get(id);
+    if (!action) return { start: new Date(), end: new Date() };
+
+    let start: Date;
+    let end: Date;
+
+    if (action.startDate && action.endDate) {
+      start = parseISO(action.startDate);
+      end = parseISO(action.endDate);
+    } else if (action.startDate && action.duration) {
+      start = parseISO(action.startDate);
+      end = addDays(start, (action.duration || 1) - 1);
+    } else {
+      if (!action.dependencies || action.dependencies.length === 0) {
+        start = new Date();
+      } else {
+        const depDates = action.dependencies
+          .filter(depId => actionMap.has(depId))
+          .map(depId => calculateForward(depId, new Set(visited)).end);
+        
+        if (depDates.length === 0) {
+          start = new Date();
+        } else {
+          const maxDepEnd = new Date(Math.max(...depDates.map(d => d.getTime())));
+          start = addDays(maxDepEnd, 1);
+        }
+      }
+      const duration = action.duration || 7;
+      end = addDays(start, duration - 1);
+    }
+
+    const result = { start, end };
+    forwardMemo.set(id, result);
+    return result;
+  };
+
+  const results = actionsList.map(action => {
+    const { start, end } = calculateForward(action.id);
+    return {
+      ...action,
+      calculatedStartDate: start,
+      calculatedEndDate: end,
+    };
+  });
+
+  const projectEnd = new Date(Math.max(...results.map(r => r.calculatedEndDate.getTime())));
+  const backwardMemo = new Map<string, { lateStart: Date, lateFinish: Date }>();
+
+  const calculateBackward = (id: string, visited = new Set<string>()): { lateStart: Date, lateFinish: Date } => {
+    if (backwardMemo.has(id)) return backwardMemo.get(id)!;
+    if (visited.has(id)) return { lateStart: projectEnd, lateFinish: projectEnd };
+    visited.add(id);
+
+    const action = results.find(r => r.id === id)!;
+    const duration = differenceInDays(action.calculatedEndDate, action.calculatedStartDate);
+    const successors = results.filter(r => r.dependencies?.includes(id));
+    
+    let lateFinish: Date;
+    if (successors.length === 0) {
+      lateFinish = projectEnd;
+    } else {
+      const successorLateStarts = successors.map(s => calculateBackward(s.id, new Set(visited)).lateStart);
+      lateFinish = addDays(new Date(Math.min(...successorLateStarts.map(d => d.getTime()))), -1);
+    }
+    
+    const lateStart = addDays(lateFinish, -duration);
+    const result = { lateStart, lateFinish };
+    backwardMemo.set(id, result);
+    return result;
+  };
+
+  return results.map(action => {
+    const { lateStart } = calculateBackward(action.id);
+    const slack = differenceInDays(lateStart, action.calculatedStartDate);
+    
+    // Overlap detection: if any dependency ends after this action starts
+    const hasOverlap = action.dependencies.some(depId => {
+      const dep = results.find(r => r.id === depId);
+      return dep && isAfter(dep.calculatedEndDate, action.calculatedStartDate);
+    });
+
+    const daysRemaining = differenceInDays(action.calculatedEndDate, new Date());
+
+    let isLate = false;
+    let isEarly = false;
+    let delayDays = 0;
+
+    if (action.status === 'Done' && action.actualEndDate && action.endDate) {
+      const actual = parseISO(action.actualEndDate);
+      const planned = parseISO(action.endDate);
+      delayDays = differenceInDays(actual, planned);
+      isLate = delayDays > 0;
+      isEarly = delayDays < 0;
+    } else if (action.status !== 'Done' && action.endDate) {
+      const planned = parseISO(action.endDate);
+      if (isAfter(new Date(), planned)) {
+        isLate = true;
+        delayDays = differenceInDays(new Date(), planned);
+      }
+    }
+
+    return {
+      ...action,
+      slack,
+      isCritical: slack === 0,
+      hasOverlap,
+      daysRemaining,
+      isLate,
+      isEarly,
+      delayDays,
+    } as CalculatedAction;
+  });
+};
 
 // --- Components ---
 
@@ -319,131 +458,6 @@ export default function App() {
   }, []);
 
   // --- Derived State (CPM Calculation) ---
-  const calculateCriticalPath = (actionsList: Action[]): CalculatedAction[] => {
-    if (actionsList.length === 0) return [];
-
-    const actionMap = new Map<string, Action>(actionsList.map(a => [a.id, a]));
-    const forwardMemo = new Map<string, { start: Date, end: Date }>();
-
-    const calculateForward = (id: string, visited = new Set<string>()): { start: Date, end: Date } => {
-      if (forwardMemo.has(id)) return forwardMemo.get(id)!;
-      if (visited.has(id)) return { start: new Date(), end: new Date() }; 
-      visited.add(id);
-
-      const action = actionMap.get(id);
-      if (!action) return { start: new Date(), end: new Date() };
-
-      let start: Date;
-      let end: Date;
-
-      if (action.startDate && action.endDate) {
-        start = parseISO(action.startDate);
-        end = parseISO(action.endDate);
-      } else if (action.startDate && action.duration) {
-        start = parseISO(action.startDate);
-        end = addDays(start, (action.duration || 1) - 1);
-      } else {
-        if (!action.dependencies || action.dependencies.length === 0) {
-          start = new Date();
-        } else {
-          const depDates = action.dependencies
-            .filter(depId => actionMap.has(depId))
-            .map(depId => calculateForward(depId, new Set(visited)).end);
-          
-          if (depDates.length === 0) {
-            start = new Date();
-          } else {
-            const maxDepEnd = new Date(Math.max(...depDates.map(d => d.getTime())));
-            start = addDays(maxDepEnd, 1);
-          }
-        }
-        const duration = action.duration || 7;
-        end = addDays(start, duration - 1);
-      }
-
-      const result = { start, end };
-      forwardMemo.set(id, result);
-      return result;
-    };
-
-    const results = actionsList.map(action => {
-      const { start, end } = calculateForward(action.id);
-      return {
-        ...action,
-        calculatedStartDate: start,
-        calculatedEndDate: end,
-      };
-    });
-
-    const projectEnd = new Date(Math.max(...results.map(r => r.calculatedEndDate.getTime())));
-    const backwardMemo = new Map<string, { lateStart: Date, lateFinish: Date }>();
-
-    const calculateBackward = (id: string, visited = new Set<string>()): { lateStart: Date, lateFinish: Date } => {
-      if (backwardMemo.has(id)) return backwardMemo.get(id)!;
-      if (visited.has(id)) return { lateStart: projectEnd, lateFinish: projectEnd };
-      visited.add(id);
-
-      const action = results.find(r => r.id === id)!;
-      const duration = differenceInDays(action.calculatedEndDate, action.calculatedStartDate);
-      const successors = results.filter(r => r.dependencies?.includes(id));
-      
-      let lateFinish: Date;
-      if (successors.length === 0) {
-        lateFinish = projectEnd;
-      } else {
-        const successorLateStarts = successors.map(s => calculateBackward(s.id, new Set(visited)).lateStart);
-        lateFinish = addDays(new Date(Math.min(...successorLateStarts.map(d => d.getTime()))), -1);
-      }
-      
-      const lateStart = addDays(lateFinish, -duration);
-      const result = { lateStart, lateFinish };
-      backwardMemo.set(id, result);
-      return result;
-    };
-
-    return results.map(action => {
-      const { lateStart } = calculateBackward(action.id);
-      const slack = differenceInDays(lateStart, action.calculatedStartDate);
-      
-      // Overlap detection: if any dependency ends after this action starts
-      const hasOverlap = action.dependencies.some(depId => {
-        const dep = results.find(r => r.id === depId);
-        return dep && isAfter(dep.calculatedEndDate, action.calculatedStartDate);
-      });
-
-      const daysRemaining = differenceInDays(action.calculatedEndDate, new Date());
-
-      let isLate = false;
-      let isEarly = false;
-      let delayDays = 0;
-
-      if (action.status === 'Done' && action.actualEndDate && action.endDate) {
-        const actual = parseISO(action.actualEndDate);
-        const planned = parseISO(action.endDate);
-        delayDays = differenceInDays(actual, planned);
-        isLate = delayDays > 0;
-        isEarly = delayDays < 0;
-      } else if (action.status !== 'Done' && action.endDate) {
-        const planned = parseISO(action.endDate);
-        if (isAfter(new Date(), planned)) {
-          isLate = true;
-          delayDays = differenceInDays(new Date(), planned);
-        }
-      }
-
-      return {
-        ...action,
-        slack,
-        isCritical: slack === 0,
-        hasOverlap,
-        daysRemaining,
-        isLate,
-        isEarly,
-        delayDays
-      };
-    });
-  };
-
   const categories = useMemo(() => {
     const cats = new Set<string>();
     projects.forEach(p => {
@@ -1206,6 +1220,7 @@ export default function App() {
                 setIsModalOpen(true);
               }}
               onTogglePin={(a) => handleUpdateAction({ ...a, isPinned: !a.isPinned })}
+              onUpdateAction={handleUpdateAction}
             />
           ) : view === 'todo' ? (
             <TodoListView 
@@ -1257,14 +1272,15 @@ export default function App() {
 
 // --- Sub-Components ---
 
-function ProjectDashboardView({ projects, actions, projectComments, onSaveComment, onDeleteComment, onEditAction, onTogglePin }: {
+function ProjectDashboardView({ projects, actions, projectComments, onSaveComment, onDeleteComment, onEditAction, onTogglePin, onUpdateAction }: {
   projects: Project[],
   actions: Action[],
   projectComments: ProjectComment[],
   onSaveComment: (projectId: string, text: string) => void,
   onDeleteComment: (id: string) => void,
   onEditAction: (a: Action) => void,
-  onTogglePin: (a: Action) => void
+  onTogglePin: (a: Action) => void,
+  onUpdateAction: (a: Action) => void
 }) {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(projects[0]?.id || null);
   const [newComment, setNewComment] = useState('');
@@ -1303,6 +1319,26 @@ function ProjectDashboardView({ projects, actions, projectComments, onSaveCommen
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 lg:p-8 space-y-8">
+        {/* Mini Gantt */}
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm h-[400px]">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+            <div className="flex items-center gap-2">
+              <Zap className="w-4 h-4 text-blue-600" />
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Aperçu Gantt</h3>
+            </div>
+          </div>
+          <div className="h-[340px]">
+            <GanttView 
+              actions={calculateCriticalPath(projectActions)} 
+              projects={projects}
+              onEdit={onEditAction}
+              onUpdateAction={onUpdateAction}
+              isMini={true}
+              singleProjectId={selectedProjectId || undefined}
+            />
+          </div>
+        </div>
+
         {/* Stats Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 lg:grid-6">
           {[
@@ -1615,18 +1651,6 @@ function TodoListView({ actions, projects, onUpdateAction, onAddTimeLog, timeLog
       </div>
     </div>
   );
-}
-
-interface CalculatedAction extends Action {
-  calculatedStartDate: Date;
-  calculatedEndDate: Date;
-  slack: number;
-  isCritical: boolean;
-  hasOverlap: boolean;
-  daysRemaining: number;
-  isLate?: boolean;
-  isEarly?: boolean;
-  delayDays?: number;
 }
 
 function ArchivesView({ projects, actions, timeLogs, onEditProject, onEditAction }: {
@@ -2815,19 +2839,28 @@ function TimeTrackingView({ projects, actions, timeLogs, onAddTimeLog, onDeleteT
   );
 }
 
-function GanttView({ actions, projects, onEdit, onUpdateAction }: { 
+function GanttView({ actions, projects, onEdit, onUpdateAction, isMini = false, singleProjectId }: { 
   actions: CalculatedAction[], 
   projects: Project[],
   onEdit: (a: Action) => void,
-  onUpdateAction: (a: Action) => void
+  onUpdateAction: (a: Action) => void,
+  isMini?: boolean,
+  singleProjectId?: string
 }) {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [zoom, setZoom] = useState(40); // Width of one day in pixels
+  const [zoom, setZoom] = useState(isMini ? 30 : 40); // Width of one day in pixels
   const [dragging, setDragging] = useState<{ id: string, startX: number, originalStart: Date, currentDelta: number } | null>(null);
-  const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>(projects.map(p => p.id));
+  const [visibleProjectIds, setVisibleProjectIds] = useState<string[]>(singleProjectId ? [singleProjectId] : projects.map(p => p.id));
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [filterSearch, setFilterSearch] = useState('');
   const [showCriticalOnly, setShowCriticalOnly] = useState(false);
+
+  // Sync visibleProjectIds if singleProjectId changes
+  useEffect(() => {
+    if (singleProjectId) {
+      setVisibleProjectIds([singleProjectId]);
+    }
+  }, [singleProjectId]);
   
   const days = useMemo(() => {
     // Show 3 months: previous, current, next
@@ -2858,6 +2891,20 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
     });
     return groups;
   }, [filteredActions, projects, visibleProjectIds]);
+
+  // Calculate row indices including separators
+  const rows = useMemo(() => {
+    const result: ({ type: 'project', project: Project } | { type: 'action', action: CalculatedAction, project: Project })[] = [];
+    groupedActions.forEach(group => {
+      if (!isMini) {
+        result.push({ type: 'project', project: group.project });
+      }
+      group.actions.forEach(action => {
+        result.push({ type: 'action', action, project: group.project });
+      });
+    });
+    return result;
+  }, [groupedActions, isMini]);
 
   const flatSortedActions = useMemo(() => {
     return groupedActions.flatMap(g => g.actions);
@@ -2925,6 +2972,25 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
     );
   };
 
+  const totalHeight = useMemo(() => {
+    return rows.reduce((acc, row) => {
+      if (row.type === 'project') return acc + 40;
+      return acc + (isMini ? 40 : 64);
+    }, 0);
+  }, [rows, isMini]);
+
+  const getRowY = (index: number) => {
+    let y = 0;
+    for (let i = 0; i < index; i++) {
+      if (rows[i].type === 'project') {
+        y += 40;
+      } else {
+        y += isMini ? 40 : 64;
+      }
+    }
+    return y;
+  };
+
   // Dependency Line Logic
   const renderDependencyLines = () => {
     return flatSortedActions.flatMap(action => {
@@ -2937,13 +3003,16 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
         
         if (startIdx === -1 || endIdx === -1) return null;
 
-        const depRowIdx = flatSortedActions.findIndex(a => a.id === depId);
-        const actionRowIdx = flatSortedActions.findIndex(a => a.id === action.id);
+        const depRowIdx = rows.findIndex(r => r.type === 'action' && r.action.id === depId);
+        const actionRowIdx = rows.findIndex(r => r.type === 'action' && r.action.id === action.id);
 
-        const x1 = (startIdx + 1) * zoom;
-        const y1 = depRowIdx * 64 + 32; // Center of 64px row
-        const x2 = endIdx * zoom;
-        const y2 = actionRowIdx * 64 + 32; // Center of 64px row
+        if (depRowIdx === -1 || actionRowIdx === -1) return null;
+
+        const rowHeight = isMini ? 40 : 64;
+        const x1 = (startIdx + 1) * zoom - 4; // Right end of predecessor bar
+        const y1 = getRowY(depRowIdx) + (rowHeight / 2); 
+        const x2 = endIdx * zoom + 4; // Left end of successor bar
+        const y2 = getRowY(actionRowIdx) + (rowHeight / 2);
 
         const isCritical = action.isCritical && dep.isCritical;
         const color = isCritical ? '#ef4444' : '#94a3b8';
@@ -2980,163 +3049,165 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
   return (
     <div className="h-full flex flex-col bg-white overflow-hidden">
       {/* Gantt Header */}
-      <div className="px-4 md:px-8 py-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 shrink-0 bg-white z-30">
-        <div className="flex items-center justify-between md:justify-start gap-4 md:gap-6">
-          <div className="flex items-center gap-4">
-            <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">{format(currentDate, 'MMMM yyyy')}</h2>
-            <div className="flex gap-1">
-              <button onClick={prevMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
-                <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
-              </button>
-              <button onClick={nextMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
-                <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
-              </button>
+      {!isMini && (
+        <div className="px-4 md:px-8 py-3 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 shrink-0 bg-white z-30">
+          <div className="flex items-center justify-between md:justify-start gap-4 md:gap-6">
+            <div className="flex items-center gap-4">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">{format(currentDate, 'MMMM yyyy')}</h2>
+              <div className="flex gap-1">
+                <button onClick={prevMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
+                  <ChevronLeft className="w-3.5 h-3.5 text-slate-600" />
+                </button>
+                <button onClick={nextMonth} className="p-1 hover:bg-slate-100 rounded-md transition-colors">
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+                </button>
+              </div>
+            </div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest md:hidden">
+              {filteredActions.length} actions
             </div>
           </div>
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest md:hidden">
-            {filteredActions.length} actions
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-3 overflow-x-auto pb-2 md:pb-0 custom-scrollbar no-scrollbar relative">
-          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200 shrink-0">
+          
+          <div className="flex items-center gap-3 overflow-x-auto pb-2 md:pb-0 custom-scrollbar no-scrollbar relative">
+            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200 shrink-0">
+                <button 
+                  onClick={() => setZoom(Math.max(20, zoom - 10))}
+                  className="p-1.5 hover:bg-white hover:shadow-sm rounded-lg transition-all text-slate-600"
+                  title="Zoom arrière"
+                >
+                  <Minus className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-[10px] font-black text-slate-400 w-8 text-center">{Math.round((zoom / 40) * 100)}%</span>
+                <button 
+                  onClick={() => setZoom(Math.min(120, zoom + 10))}
+                  className="p-1.5 hover:bg-white hover:shadow-sm rounded-lg transition-all text-slate-600"
+                  title="Zoom avant"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
               <button 
-                onClick={() => setZoom(Math.max(20, zoom - 10))}
-                className="p-1.5 hover:bg-white hover:shadow-sm rounded-lg transition-all text-slate-600"
-                title="Zoom arrière"
+                onClick={() => setShowCriticalOnly(!showCriticalOnly)}
+                className={cn(
+                  "flex items-center gap-2 px-4 py-1.5 rounded-xl border transition-all text-xs font-bold uppercase tracking-wider",
+                  showCriticalOnly 
+                    ? "bg-rose-600 text-white border-rose-600 shadow-lg shadow-rose-500/20" 
+                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+                )}
               >
-                <Minus className="w-3.5 h-3.5" />
+                <Zap className={cn("w-3.5 h-3.5", showCriticalOnly && "fill-current")} />
+                Chemin Critique {showCriticalOnly ? "Actif" : "Inactif"}
               </button>
-              <span className="text-[10px] font-black text-slate-400 w-8 text-center">{Math.round((zoom / 40) * 100)}%</span>
+
               <button 
-                onClick={() => setZoom(Math.min(120, zoom + 10))}
-                className="p-1.5 hover:bg-white hover:shadow-sm rounded-lg transition-all text-slate-600"
-                title="Zoom avant"
+                onClick={() => setIsFilterOpen(!isFilterOpen)}
+                className={cn(
+                  "flex items-center gap-2 px-4 py-1.5 rounded-xl border transition-all text-xs font-bold uppercase tracking-wider",
+                  visibleProjectIds.length === projects.length 
+                    ? "bg-slate-50 border-slate-200 text-slate-600" 
+                    : "bg-blue-50 border-blue-200 text-blue-600"
+                )}
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Filter className="w-3.5 h-3.5" />
+                Projets ({visibleProjectIds.length}/{projects.length})
+                <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", isFilterOpen && "rotate-180")} />
               </button>
-            </div>
 
-            <button 
-              onClick={() => setShowCriticalOnly(!showCriticalOnly)}
-              className={cn(
-                "flex items-center gap-2 px-4 py-1.5 rounded-xl border transition-all text-xs font-bold uppercase tracking-wider",
-                showCriticalOnly 
-                  ? "bg-rose-600 text-white border-rose-600 shadow-lg shadow-rose-500/20" 
-                  : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
-              )}
-            >
-              <Zap className={cn("w-3.5 h-3.5", showCriticalOnly && "fill-current")} />
-              Chemin Critique {showCriticalOnly ? "Actif" : "Inactif"}
-            </button>
-
-            <button 
-              onClick={() => setIsFilterOpen(!isFilterOpen)}
-              className={cn(
-                "flex items-center gap-2 px-4 py-1.5 rounded-xl border transition-all text-xs font-bold uppercase tracking-wider",
-                visibleProjectIds.length === projects.length 
-                  ? "bg-slate-50 border-slate-200 text-slate-600" 
-                  : "bg-blue-50 border-blue-200 text-blue-600"
-              )}
-            >
-              <Filter className="w-3.5 h-3.5" />
-              Projets ({visibleProjectIds.length}/{projects.length})
-              <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", isFilterOpen && "rotate-180")} />
-            </button>
-
-            <button 
-              onClick={() => {
-                let code = "gantt\n";
-                code += "    title Diagramme de Gantt\n";
-                code += "    dateFormat  YYYY-MM-DD\n";
-                code += "    axisFormat  %d/%m\n";
-                
-                groupedActions.forEach(group => {
-                  code += `    section ${group.project.name}\n`;
-                  group.actions.forEach(action => {
-                    const start = format(action.calculatedStartDate, 'yyyy-MM-dd');
-                    const end = format(action.calculatedEndDate, 'yyyy-MM-dd');
-                    const status = action.status === 'Done' ? 'done' : 
-                                   action.status === 'In Progress' ? 'active' : 
-                                   action.isCritical ? 'crit' : '';
-                    
-                    code += `    ${action.name} :${status}, ${action.id}, ${start}, ${end}\n`;
+              <button 
+                onClick={() => {
+                  let code = "gantt\n";
+                  code += "    title Diagramme de Gantt\n";
+                  code += "    dateFormat  YYYY-MM-DD\n";
+                  code += "    axisFormat  %d/%m\n";
+                  
+                  groupedActions.forEach(group => {
+                    code += `    section ${group.project.name}\n`;
+                    group.actions.forEach(action => {
+                      const start = format(action.calculatedStartDate, 'yyyy-MM-dd');
+                      const end = format(action.calculatedEndDate, 'yyyy-MM-dd');
+                      const status = action.status === 'Done' ? 'done' : 
+                                     action.status === 'In Progress' ? 'active' : 
+                                     action.isCritical ? 'crit' : '';
+                      
+                      code += `    ${action.name} :${status}, ${action.id}, ${start}, ${end}\n`;
+                    });
                   });
-                });
-                
-                navigator.clipboard.writeText(code);
-                // Simple feedback
-                const btn = document.activeElement as HTMLButtonElement;
-                const originalText = btn.innerText;
-                btn.innerText = "Copié !";
-                setTimeout(() => { btn.innerText = originalText; }, 2000);
-              }}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:border-slate-300 transition-all text-xs font-bold uppercase tracking-wider"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Code Mermaid
-            </button>
+                  
+                  navigator.clipboard.writeText(code);
+                  // Simple feedback
+                  const btn = document.activeElement as HTMLButtonElement;
+                  const originalText = btn.innerText;
+                  btn.innerText = "Copié !";
+                  setTimeout(() => { btn.innerText = originalText; }, 2000);
+                }}
+                className="flex items-center gap-2 px-4 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:border-slate-300 transition-all text-xs font-bold uppercase tracking-wider"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Code Mermaid
+              </button>
 
-            {isFilterOpen && (
-              <div className="absolute top-full left-6 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 z-[100] animate-in fade-in slide-in-from-top-2 duration-200">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Filtrer les Projets</h3>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => setVisibleProjectIds(projects.map(p => p.id))}
-                      className="text-[10px] font-bold text-blue-600 hover:underline"
-                    >
-                      Tous
-                    </button>
-                    <button 
-                      onClick={() => setVisibleProjectIds([])}
-                      className="text-[10px] font-bold text-slate-400 hover:underline"
-                    >
-                      Aucun
-                    </button>
+              {isFilterOpen && (
+                <div className="absolute top-full left-6 mt-2 w-72 bg-white rounded-2xl shadow-2xl border border-slate-100 p-4 z-[100] animate-in fade-in slide-in-from-top-2 duration-200">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Filtrer les Projets</h3>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => setVisibleProjectIds(projects.map(p => p.id))}
+                        className="text-[10px] font-bold text-blue-600 hover:underline"
+                      >
+                        Tous
+                      </button>
+                      <button 
+                        onClick={() => setVisibleProjectIds([])}
+                        className="text-[10px] font-bold text-slate-400 hover:underline"
+                      >
+                        Aucun
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div className="relative mb-3">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                    <input 
+                      type="text"
+                      value={filterSearch}
+                      onChange={e => setFilterSearch(e.target.value)}
+                      placeholder="Rechercher un projet..."
+                      className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+
+                  <div className="max-h-64 overflow-y-auto space-y-1 custom-scrollbar pr-2">
+                    {projects
+                      .filter(p => p.name.toLowerCase().includes(filterSearch.toLowerCase()))
+                      .map(p => (
+                      <label key={p.id} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-xl cursor-pointer transition-colors group">
+                        <input 
+                          type="checkbox"
+                          checked={visibleProjectIds.includes(p.id)}
+                          onChange={() => toggleProject(p.id)}
+                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                        <span className="text-xs font-bold text-slate-600 group-hover:text-slate-900 truncate">{p.name}</span>
+                      </label>
+                    ))}
                   </div>
                 </div>
-                
-                <div className="relative mb-3">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-                  <input 
-                    type="text"
-                    value={filterSearch}
-                    onChange={e => setFilterSearch(e.target.value)}
-                    placeholder="Rechercher un projet..."
-                    className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                  />
-                </div>
-
-                <div className="max-h-64 overflow-y-auto space-y-1 custom-scrollbar pr-2">
-                  {projects
-                    .filter(p => p.name.toLowerCase().includes(filterSearch.toLowerCase()))
-                    .map(p => (
-                    <label key={p.id} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-xl cursor-pointer transition-colors group">
-                      <input 
-                        type="checkbox"
-                        checked={visibleProjectIds.includes(p.id)}
-                        onChange={() => toggleProject(p.id)}
-                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
-                      <span className="text-xs font-bold text-slate-600 group-hover:text-slate-900 truncate">{p.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+            {filteredActions.length} actions affichées
           </div>
-        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-          {filteredActions.length} actions affichées
         </div>
-      </div>
+      )}
 
       {/* Gantt Grid */}
       <div className="flex-1 overflow-auto relative custom-scrollbar">
         <div className="min-w-max relative">
           {/* SVG Overlay for Connections */}
-          <svg className="absolute top-[49px] left-64 pointer-events-none z-0" style={{ width: days.length * zoom, height: flatSortedActions.length * 64 }}>
+          <svg className="absolute top-[49px] left-64 pointer-events-none z-0" style={{ width: days.length * zoom, height: totalHeight }}>
             {renderDependencyLines()}
           </svg>
 
@@ -3162,105 +3233,127 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
           </div>
 
           {/* Action Rows */}
-          {groupedActions.map((group, groupIdx) => (
-            <div key={group.project.id} className="contents">
-              {group.actions.map((action, actionIdx) => {
-                const start = action.calculatedStartDate;
-                const end = action.calculatedEndDate;
-                const startIdx = days.findIndex(d => isSameDay(d, start));
-                const endIdx = days.findIndex(d => isSameDay(d, end));
-                
-                // Handle actions starting before or ending after the current view
-                const visibleStartIdx = startIdx === -1 ? 0 : startIdx;
-                const visibleEndIdx = endIdx === -1 ? days.length - 1 : endIdx;
-                const visibleDuration = visibleEndIdx - visibleStartIdx + 1;
+          {rows.map((row, idx) => {
+            if (row.type === 'project') {
+              return (
+                <div key={`project-${row.project.id}`} className="flex border-b border-slate-200 bg-slate-50/80 sticky left-0 z-20">
+                  <div className="w-64 shrink-0 border-r border-slate-200 p-3 flex items-center gap-2 sticky left-0 bg-slate-50/80 z-30">
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: row.project.color }} />
+                    <span className="text-xs font-black text-slate-900 uppercase tracking-widest truncate">{row.project.name}</span>
+                  </div>
+                  <div className="flex-1 h-10" />
+                </div>
+              );
+            }
 
-                const isLate = action.isLate;
-                const isHighPriority = action.priority === 'High';
-                const useRed = isHighPriority || isLate;
+            const { action, project } = row;
+            const start = action.calculatedStartDate;
+            const end = action.calculatedEndDate;
+            const startIdx = days.findIndex(d => isSameDay(d, start));
+            const endIdx = days.findIndex(d => isSameDay(d, end));
+            
+            // Handle actions starting before or ending after the current view
+            const visibleStartIdx = startIdx === -1 ? 0 : startIdx;
+            const visibleEndIdx = endIdx === -1 ? days.length - 1 : endIdx;
+            const visibleDuration = visibleEndIdx - visibleStartIdx + 1;
+
+            const isLate = action.isLate;
+            const isHighPriority = action.priority === 'High';
+            const useRed = isHighPriority || isLate;
+            const rowHeight = isMini ? 40 : 64;
+            
+            return (
+              <div key={action.id} className={cn(
+                "flex border-b border-slate-50 hover:bg-blue-50/30 transition-colors group relative z-10",
+                idx % 2 === 1 && "bg-slate-50/20"
+              )}>
+                <div 
+                  className={cn(
+                    "w-64 shrink-0 border-r border-slate-100 p-3 flex items-center gap-3 cursor-pointer relative bg-white group-hover:bg-blue-50/30 sticky left-0 z-20",
+                    isMini ? "h-10" : "h-16"
+                  )}
+                  onClick={() => onEdit(action)}
+                >
+                  <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: project.color }} />
+                  <div className="flex-1 min-w-0">
+                    {!isMini && (
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter truncate">{project.name}</span>
+                        {project.category && (
+                          <span className="px-1 py-0.5 bg-slate-50 text-slate-400 text-[7px] font-bold uppercase rounded border border-slate-100">
+                            {project.category}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <span className={cn(
+                        isMini ? "text-xs font-bold" : "text-sm font-semibold",
+                        "truncate block",
+                        useRed ? "text-rose-600" : "text-slate-700"
+                      )}>
+                        {action.name}
+                      </span>
+                      {action.isCritical && <Zap className="w-3 h-3 text-rose-500 fill-current" />}
+                    </div>
+                  </div>
+                </div>
                 
-                return (
-                  <div key={action.id} className={cn(
-                    "flex border-b border-slate-50 hover:bg-blue-50/30 transition-colors group relative z-10",
-                    groupIdx % 2 === 1 && "bg-slate-50/20"
-                  )}>
+                <div className="flex relative" style={{ height: rowHeight }}>
+                  {days.map(day => (
                     <div 
-                      className="w-64 shrink-0 border-r border-slate-100 p-3 flex items-center gap-3 cursor-pointer relative bg-white group-hover:bg-blue-50/30 sticky left-0 z-20"
+                      key={day.toISOString()} 
+                      className={cn(
+                        "shrink-0 border-r border-slate-50/50",
+                        (day.getDay() === 0 || day.getDay() === 6) && "bg-slate-50/30"
+                      )} 
+                      style={{ width: zoom }}
+                    />
+                  ))}
+                  
+                  {/* Action Bar */}
+                  {(startIdx !== -1 || endIdx !== -1) && (
+                    <div 
+                      onMouseDown={(e) => handleMouseDown(e, action)}
+                      title={`${action.priority} Priority. Marge: ${action.slack}j. ${isLate ? 'EN RETARD' : ''}${action.actualEndDate ? ` - Fini le ${format(parseISO(action.actualEndDate), 'dd/MM/yyyy')}` : ''}`}
+                      className={cn(
+                        "absolute top-1/2 -translate-y-1/2 rounded-lg shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md z-10 overflow-hidden select-none",
+                        isMini ? "h-6" : "h-9",
+                        action.status === 'Done' ? "bg-emerald-50 border-emerald-200 text-emerald-700" :
+                        action.status === 'In Progress' ? "bg-blue-50 border-blue-200 text-blue-700" :
+                        isLate ? "bg-rose-50 border-rose-200 text-rose-700" :
+                        "bg-slate-50 border-slate-200 text-slate-700",
+                        action.isCritical && "ring-2 ring-rose-500 ring-offset-1",
+                        dragging?.id === action.id && "ring-2 ring-blue-500 ring-offset-2 scale-[1.02] opacity-100 z-50 cursor-grabbing"
+                      )}
+                      style={{ 
+                        left: `${(visibleStartIdx + (dragging?.id === action.id ? dragging.currentDelta : 0)) * zoom + 4}px`, 
+                        width: `${visibleDuration * zoom - 8}px`,
+                      }}
                       onClick={() => onEdit(action)}
                     >
-                      <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: group.project.color }} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5 mb-0.5">
-                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter truncate">{group.project.name}</span>
-                          {group.project.category && (
-                            <span className="px-1 py-0.5 bg-slate-50 text-slate-400 text-[7px] font-bold uppercase rounded border border-slate-100">
-                              {group.project.category}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
+                      {/* Color Strip */}
+                      <div 
+                        className="w-1.5 h-full shrink-0" 
+                        style={{ 
+                          backgroundColor: action.status === 'Done' ? '#10b981' :
+                                         action.status === 'In Progress' ? '#3b82f6' :
+                                         isLate ? '#f43f5e' : project.color 
+                        }} 
+                      />
+                      <div className="flex items-center justify-between w-full px-3 overflow-hidden">
+                        <div className="flex flex-col min-w-0">
                           <span className={cn(
-                            "text-sm font-semibold truncate block",
-                            useRed ? "text-rose-600" : "text-slate-700"
+                            isMini ? "text-[10px]" : "text-[11px]",
+                            "font-bold truncate whitespace-nowrap",
+                            action.status === 'Done' ? "text-emerald-900" :
+                            action.status === 'In Progress' ? "text-blue-900" :
+                            isLate ? "text-rose-900" : "text-slate-900"
                           )}>
                             {action.name}
                           </span>
-                          {action.isCritical && <Zap className="w-3 h-3 text-rose-500 fill-current" />}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="flex relative h-16">
-                      {days.map(day => (
-                        <div 
-                          key={day.toISOString()} 
-                          className={cn(
-                            "shrink-0 border-r border-slate-50/50",
-                            (day.getDay() === 0 || day.getDay() === 6) && "bg-slate-50/30"
-                          )} 
-                          style={{ width: zoom }}
-                        />
-                      ))}
-                      
-                      {/* Action Bar */}
-                      {(startIdx !== -1 || endIdx !== -1) && (
-                        <div 
-                          onMouseDown={(e) => handleMouseDown(e, action)}
-                          title={`${action.priority} Priority. Marge: ${action.slack}j. ${isLate ? 'EN RETARD' : ''}${action.actualEndDate ? ` - Fini le ${format(parseISO(action.actualEndDate), 'dd/MM/yyyy')}` : ''}`}
-                          className={cn(
-                            "absolute top-1/2 -translate-y-1/2 h-9 rounded-lg shadow-sm border flex items-center px-0 cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md z-10 overflow-hidden select-none",
-                            action.status === 'Done' ? "bg-emerald-50 border-emerald-200 text-emerald-700" :
-                            action.status === 'In Progress' ? "bg-blue-50 border-blue-200 text-blue-700" :
-                            isLate ? "bg-rose-50 border-rose-200 text-rose-700" :
-                            "bg-slate-50 border-slate-200 text-slate-700",
-                            action.isCritical && "ring-2 ring-rose-500 ring-offset-1",
-                            dragging?.id === action.id && "ring-2 ring-blue-500 ring-offset-2 scale-[1.02] opacity-100 z-50 cursor-grabbing"
-                          )}
-                          style={{ 
-                            left: `${(visibleStartIdx + (dragging?.id === action.id ? dragging.currentDelta : 0)) * zoom + 4}px`, 
-                            width: `${visibleDuration * zoom - 8}px`,
-                          }}
-                          onClick={() => onEdit(action)}
-                        >
-                          {/* Color Strip */}
-                          <div 
-                            className="w-1.5 h-full shrink-0" 
-                            style={{ 
-                              backgroundColor: action.status === 'Done' ? '#10b981' :
-                                             action.status === 'In Progress' ? '#3b82f6' :
-                                             isLate ? '#f43f5e' : group.project.color 
-                            }} 
-                          />
-                          <div className="flex items-center justify-between w-full px-3 overflow-hidden">
-                            <div className="flex flex-col min-w-0">
-                              <span className={cn(
-                                "text-[11px] font-bold truncate whitespace-nowrap",
-                                action.status === 'Done' ? "text-emerald-900" :
-                                action.status === 'In Progress' ? "text-blue-900" :
-                                isLate ? "text-rose-900" : "text-slate-900"
-                              )}>
-                                {action.name}
-                              </span>
+                          {!isMini && (
+                            <>
                               {action.status === 'Done' ? (
                                 <span className={cn(
                                   "text-[9px] font-black uppercase tracking-tighter",
@@ -3281,23 +3374,25 @@ function GanttView({ actions, projects, onEdit, onUpdateAction }: {
                                       : "En retard"}
                                 </span>
                               )}
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                              {action.isCritical && <Zap className="w-3 h-3 text-rose-500 fill-current" />}
-                              {action.status === 'To Do' && <AlertCircle className="w-3 h-3 text-slate-400" />}
-                              {action.status === 'In Progress' && <Clock className="w-3 h-3 text-blue-500" />}
-                              {action.status === 'Blocked' && <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />}
-                              {action.status === 'Done' && <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
-                            </div>
-                          </div>
+                            </>
+                          )}
                         </div>
-                      )}
+                        {!isMini && (
+                          <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                            {action.isCritical && <Zap className="w-3 h-3 text-rose-500 fill-current" />}
+                            {action.status === 'To Do' && <AlertCircle className="w-3 h-3 text-slate-400" />}
+                            {action.status === 'In Progress' && <Clock className="w-3 h-3 text-blue-500" />}
+                            {action.status === 'Blocked' && <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />}
+                            {action.status === 'Done' && <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+                  )}
+                </div>
+              </div>
+            );
+          })}
           
           {groupedActions.length === 0 && (
             <div className="p-24 text-center space-y-4">
